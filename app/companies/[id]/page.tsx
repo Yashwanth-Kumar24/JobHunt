@@ -9,6 +9,7 @@ type Job = {
   posting_url: string;
   posted_at: string | null;
   job_id: string | null;
+  locations: string | null;
 };
 
 type SortField = "posted_at";
@@ -35,7 +36,8 @@ export default function JobsPage() {
         title,
         posting_url,
         posted_at,
-        job_id
+        job_id,
+        locations
       `)
       .eq("company_id", companyId)
       .order("posted_at", { ascending: false })
@@ -117,12 +119,14 @@ export default function JobsPage() {
             <th className="p-2 border">Title</th>
             <th className="p-2 border">Job ID</th>
             <th className="p-2 border">Link</th>
+            <th className="p-2 border">Location</th>
             <th
               className="p-2 border cursor-pointer select-none"
               onClick={() => toggleSort("posted_at")}
             >
               Posted {sortIcon("posted_at")}
             </th>
+            
           </tr>
         </thead>
 
@@ -141,6 +145,7 @@ export default function JobsPage() {
                   Open
                 </a>
               </td>
+              <td className="p-2 border">{job.locations ?? "US"}</td>
               <td className="p-2 border">{fmt(job.posted_at)}</td>
             </tr>
           ))}
