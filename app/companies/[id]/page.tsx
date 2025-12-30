@@ -19,12 +19,28 @@ export default function JobsPage() {
   const companyId = typeof params?.id === "string" ? params.id : null;
 
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [companyName, setCompanyName] = useState<string>(""); // ✅ NEW
   const [sortField, setSortField] = useState<SortField>("posted_at");
   const [ascending, setAscending] = useState(false);
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
+  // 🔹 Fetch company name
+  useEffect(() => {
+    if (!companyId) return;
+
+    supabase
+      .from("companies")
+      .select("name")
+      .eq("id", companyId)
+      .single()
+      .then(({ data }) => {
+        if (data?.name) setCompanyName(data.name);
+      });
+  }, [companyId]);
+
+  // 🔹 Fetch jobs
   useEffect(() => {
     if (!companyId) return;
 
@@ -83,8 +99,9 @@ export default function JobsPage() {
   return (
     <main className="min-h-screen bg-slate-50 p-6">
       <div className="max-w-7xl mx-auto">
+        {/* ✅ UPDATED HEADER */}
         <h1 className="text-3xl font-semibold text-slate-800 mb-2">
-          Jobs
+          {companyName ? `${companyName} Jobs` : "Jobs"}
         </h1>
         <p className="text-slate-600 mb-6">
           Browse open positions for this company
@@ -113,23 +130,15 @@ export default function JobsPage() {
           </span>
         </div>
 
-        {/* Table Card */}
+        {/* Table */}
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
           <table className="min-w-full text-sm">
             <thead className="bg-slate-100 text-slate-700">
               <tr>
-                <th className="px-4 py-3 text-left font-medium">
-                  Title
-                </th>
-                <th className="px-4 py-3 text-left font-medium">
-                  Job ID
-                </th>
-                <th className="px-4 py-3 text-left font-medium">
-                  Link
-                </th>
-                <th className="px-4 py-3 text-left font-medium">
-                  Location
-                </th>
+                <th className="px-4 py-3 text-left font-medium">Title</th>
+                <th className="px-4 py-3 text-left font-medium">Job ID</th>
+                <th className="px-4 py-3 text-left font-medium">Link</th>
+                <th className="px-4 py-3 text-left font-medium">Location</th>
                 <th
                   className="px-4 py-3 text-left font-medium cursor-pointer select-none"
                   onClick={() => toggleSort("posted_at")}
