@@ -11,6 +11,7 @@ type Company = {
 
 export default function CompaniesPage() {
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     supabase
@@ -19,25 +20,50 @@ export default function CompaniesPage() {
       .order("name")
       .then(({ data }) => {
         if (data) setCompanies(data);
+        setLoading(false);
       });
   }, []);
 
   return (
-    <main className="p-6">
-      <h1 className="text-2xl font-bold mb-4">Companies</h1>
+    <main className="min-h-screen bg-slate-50 p-6">
+      <div className="max-w-6xl mx-auto">
+        <h1 className="text-3xl font-semibold text-slate-800 mb-2">
+          Companies
+        </h1>
+        <p className="text-slate-600 mb-8">
+          Explore companies and view their open job positions
+        </p>
 
-      <ul className="space-y-2">
-        {companies.map(c => (
-          <li key={c.id}>
+        {loading && (
+          <p className="text-slate-500">Loading companies...</p>
+        )}
+
+        {!loading && companies.length === 0 && (
+          <p className="text-slate-500">No companies available.</p>
+        )}
+
+        <div className="grid gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+          {companies.map(company => (
             <Link
-              href={`/companies/${c.id}`}
-              className="text-blue-600 hover:underline"
+              key={company.id}
+              href={`/companies/${company.id}`}
+              className="group"
             >
-              {c.name}
+              <div className="h-full rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-all duration-200 hover:border-blue-300 hover:shadow-md">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-medium text-slate-800 group-hover:text-blue-600">
+                    {company.name}
+                  </h2>
+                </div>
+
+                <div className="mt-3 text-sm text-slate-500">
+                  View open roles →
+                </div>
+              </div>
             </Link>
-          </li>
-        ))}
-      </ul>
+          ))}
+        </div>
+      </div>
     </main>
   );
 }

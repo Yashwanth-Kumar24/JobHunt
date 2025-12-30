@@ -16,14 +16,12 @@ type SortField = "posted_at";
 
 export default function JobsPage() {
   const params = useParams();
-  const companyId =
-    typeof params?.id === "string" ? params.id : null;
+  const companyId = typeof params?.id === "string" ? params.id : null;
 
   const [jobs, setJobs] = useState<Job[]>([]);
   const [sortField, setSortField] = useState<SortField>("posted_at");
   const [ascending, setAscending] = useState(false);
 
-  // pagination state
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
@@ -41,38 +39,32 @@ export default function JobsPage() {
       `)
       .eq("company_id", companyId)
       .order("posted_at", { ascending: false })
-      .then(({ data, error }) => {
-        if (!error && data) {
+      .then(({ data }) => {
+        if (data) {
           setJobs(data);
           setPage(1);
         }
       });
   }, [companyId]);
 
-  // sorting
   const sortedJobs = [...jobs].sort((a, b) => {
     const aVal = a[sortField];
     const bVal = b[sortField];
-
     if (!aVal && !bVal) return 0;
     if (!aVal) return 1;
     if (!bVal) return -1;
-
     const diff =
       new Date(aVal).getTime() - new Date(bVal).getTime();
-
     return ascending ? diff : -diff;
   });
 
-  // pagination
   const totalPages = Math.ceil(sortedJobs.length / pageSize);
   const start = (page - 1) * pageSize;
   const paginatedJobs = sortedJobs.slice(start, start + pageSize);
 
   function toggleSort(field: SortField) {
-    if (field === sortField) {
-      setAscending(!ascending);
-    } else {
+    if (field === sortField) setAscending(!ascending);
+    else {
       setSortField(field);
       setAscending(false);
     }
@@ -89,86 +81,116 @@ export default function JobsPage() {
   }
 
   return (
-    <main className="p-6">
-      <h1 className="text-2xl font-bold mb-4">Jobs</h1>
+    <main className="min-h-screen bg-slate-50 p-6">
+      <div className="max-w-7xl mx-auto">
+        <h1 className="text-3xl font-semibold text-slate-800 mb-2">
+          Jobs
+        </h1>
+        <p className="text-slate-600 mb-6">
+          Browse open positions for this company
+        </p>
 
-      {/* Pagination controls */}
-      <div className="flex items-center gap-4 mb-4">
-        <span>Rows per page:</span>
-        <select
-          value={pageSize}
-          onChange={(e) => {
-            setPageSize(Number(e.target.value));
-            setPage(1);
-          }}
-          className="border p-1"
-        >
-          <option value={10}>10</option>
-          <option value={20}>20</option>
-          <option value={30}>30</option>
-        </select>
-
-        <span className="ml-auto">
-          Page {page} of {totalPages || 1}
-        </span>
-      </div>
-
-      <table className="w-full border border-gray-300">
-        <thead className="bg-gray-100">
-          <tr>
-            <th className="p-2 border">Title</th>
-            <th className="p-2 border">Job ID</th>
-            <th className="p-2 border">Link</th>
-            <th className="p-2 border">Location</th>
-            <th
-              className="p-2 border cursor-pointer select-none"
-              onClick={() => toggleSort("posted_at")}
+        {/* Controls */}
+        <div className="flex flex-wrap items-center gap-4 mb-4">
+          <div className="flex items-center gap-2 text-sm text-slate-600">
+            <span>Rows per page</span>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setPage(1);
+              }}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
             >
-              Posted {sortIcon("posted_at")}
-            </th>
-            
-          </tr>
-        </thead>
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={30}>30</option>
+            </select>
+          </div>
 
-        <tbody>
-          {paginatedJobs.map((job, idx) => (
-            <tr key={idx}>
-              <td className="p-2 border">{job.title}</td>
-              <td className="p-2 border">{job.job_id ?? "-"}</td>
-              <td className="p-2 border">
-                <a
-                  href={job.posting_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-blue-600 hover:underline"
+          <span className="ml-auto text-sm text-slate-600">
+            Page {page} of {totalPages || 1}
+          </span>
+        </div>
+
+        {/* Table Card */}
+        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-100 text-slate-700">
+              <tr>
+                <th className="px-4 py-3 text-left font-medium">
+                  Title
+                </th>
+                <th className="px-4 py-3 text-left font-medium">
+                  Job ID
+                </th>
+                <th className="px-4 py-3 text-left font-medium">
+                  Link
+                </th>
+                <th className="px-4 py-3 text-left font-medium">
+                  Location
+                </th>
+                <th
+                  className="px-4 py-3 text-left font-medium cursor-pointer select-none"
+                  onClick={() => toggleSort("posted_at")}
                 >
-                  Open
-                </a>
-              </td>
-              <td className="p-2 border">{job.locations ?? "US"}</td>
-              <td className="p-2 border">{fmt(job.posted_at)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                  Posted On {sortIcon("posted_at")}
+                </th>
+              </tr>
+            </thead>
 
-      {/* Pagination buttons */}
-      <div className="flex gap-2 mt-4">
-        <button
-          disabled={page === 1}
-          onClick={() => setPage(page - 1)}
-          className="border px-3 py-1 disabled:opacity-50"
-        >
-          Prev
-        </button>
+            <tbody>
+              {paginatedJobs.map((job, idx) => (
+                <tr
+                  key={idx}
+                  className="border-t border-slate-200 hover:bg-slate-50 transition"
+                >
+                  <td className="px-4 py-3 font-medium text-slate-800">
+                    {job.title}
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">
+                    {job.job_id ?? "-"}
+                  </td>
+                  <td className="px-4 py-3">
+                    <a
+                      href={job.posting_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 hover:underline"
+                    >
+                      Open
+                    </a>
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">
+                    {job.locations ?? "US"}
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">
+                    {fmt(job.posted_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
 
-        <button
-          disabled={page === totalPages}
-          onClick={() => setPage(page + 1)}
-          className="border px-3 py-1 disabled:opacity-50"
-        >
-          Next
-        </button>
+        {/* Pagination */}
+        <div className="mt-6 flex justify-between">
+          <button
+            disabled={page === 1}
+            onClick={() => setPage(page - 1)}
+            className="rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            Prev
+          </button>
+
+          <button
+            disabled={page === totalPages}
+            onClick={() => setPage(page + 1)}
+            className="rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            Next
+          </button>
+        </div>
       </div>
     </main>
   );
