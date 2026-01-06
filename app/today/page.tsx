@@ -7,7 +7,7 @@ import { supabase } from "@/lib/supabase";
 type Job = {
   title: string;
   posting_url: string;
-  posted_at: string | null;
+  posted_at: string;
   job_id: string | null;
   locations: any | null;
   company_id: string;
@@ -21,7 +21,10 @@ export default function TodaysJobsPage() {
   const [loading, setLoading] = useState(true);
 
   const [search, setSearch] = useState("");
+
   const [companyAsc, setCompanyAsc] = useState(true);
+  const [postedAsc, setPostedAsc] = useState(false);
+  const [sortByPosted, setSortByPosted] = useState(true);
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -74,7 +77,7 @@ export default function TodaysJobsPage() {
     loadData();
   }, []);
 
-  // 🔍 SEARCH across all fields
+  // 🔍 SEARCH
   const filteredJobs = useMemo(() => {
     if (!search.trim()) return jobs;
 
@@ -100,24 +103,39 @@ export default function TodaysJobsPage() {
     });
   }, [jobs, companyMap, search]);
 
-  // 🔤 Sort by company only
+  // 🔤 SORTING
   const sortedJobs = useMemo(() => {
-    return [...filteredJobs].sort((a, b) => {
+    const data = [...filteredJobs];
+
+    if (sortByPosted) {
+      return data.sort((a, b) => {
+        const da = new Date(a.posted_at).getTime();
+        const db = new Date(b.posted_at).getTime();
+        return postedAsc ? da - db : db - da;
+      });
+    }
+
+    return data.sort((a, b) => {
       const aName = companyMap[a.company_id] || "";
       const bName = companyMap[b.company_id] || "";
       return companyAsc
         ? aName.localeCompare(bName)
         : bName.localeCompare(aName);
     });
-  }, [filteredJobs, companyMap, companyAsc]);
+  }, [
+    filteredJobs,
+    companyMap,
+    companyAsc,
+    postedAsc,
+    sortByPosted,
+  ]);
 
   const totalPages = Math.ceil(sortedJobs.length / pageSize);
   const start = (page - 1) * pageSize;
   const paginatedJobs = sortedJobs.slice(start, start + pageSize);
 
-  function fmtDate(value: string | null) {
-    if (!value) return "-";
-    return new Date(value).toLocaleDateString();
+  function fmtDateTime(value: string) {
+    return new Date(value).toLocaleString();
   }
 
   function fmtLocation(loc: any) {
@@ -178,7 +196,10 @@ export default function TodaysJobsPage() {
                 <tr>
                   <th
                     className="px-4 py-3 text-left font-medium cursor-pointer"
-                    onClick={() => setCompanyAsc(!companyAsc)}
+                    onClick={() => {
+                      setSortByPosted(false);
+                      setCompanyAsc(!companyAsc);
+                    }}
                   >
                     Company {companyAsc ? "↑" : "↓"}
                   </th>
@@ -194,8 +215,14 @@ export default function TodaysJobsPage() {
                   <th className="px-4 py-3 text-left font-medium">
                     Location
                   </th>
-                  <th className="px-4 py-3 text-left font-medium">
-                    Posted
+                  <th
+                    className="px-4 py-3 text-left font-medium cursor-pointer"
+                    onClick={() => {
+                      setSortByPosted(true);
+                      setPostedAsc(!postedAsc);
+                    }}
+                  >
+                    Posted {sortByPosted ? (postedAsc ? "↑" : "↓") : ""}
                   </th>
                 </tr>
               </thead>
@@ -222,20 +249,22 @@ export default function TodaysJobsPage() {
                     <td className="px-4 py-3 text-slate-600">
                       {job.job_id ?? "-"}
                     </td>
+
                     <td className="px-4 py-3 text-slate-600">
                       <Link
-                        href={`${job.posting_url}`}
+                        href={job.posting_url}
                         className="text-blue-600 hover:underline"
                       >
-                        {"View Job"}
+                        View Job
                       </Link>
                     </td>
+
                     <td className="px-4 py-3 text-slate-600">
                       {fmtLocation(job.locations)}
                     </td>
 
                     <td className="px-4 py-3 text-slate-600">
-                      {fmtDate(job.posted_at)}
+                      {fmtDateTime(job.posted_at)}
                     </td>
                   </tr>
                 ))}
