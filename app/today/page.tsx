@@ -172,8 +172,8 @@ export default function TodaysJobsPage() {
         </div>
 
         {!loading && paginatedJobs.length > 0 && (
-          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <table className="min-w-full text-sm">
+          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+            <table className="min-w-[900px] text-sm">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
                   <th
