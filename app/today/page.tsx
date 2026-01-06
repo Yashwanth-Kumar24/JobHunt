@@ -173,7 +173,7 @@ export default function TodaysJobsPage() {
 
         {!loading && paginatedJobs.length > 0 && (
           <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-            <table className="min-w-[900px] text-sm">
+            <table className="min-w-full text-sm">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
                   <th
@@ -187,6 +187,9 @@ export default function TodaysJobsPage() {
                   </th>
                   <th className="px-4 py-3 text-left font-medium">
                     Job ID
+                  </th>
+                  <th className="px-4 py-3 text-left font-medium">
+                    Link
                   </th>
                   <th className="px-4 py-3 text-left font-medium">
                     Location
@@ -219,7 +222,14 @@ export default function TodaysJobsPage() {
                     <td className="px-4 py-3 text-slate-600">
                       {job.job_id ?? "-"}
                     </td>
-
+                    <td className="px-4 py-3 text-slate-600">
+                      <Link
+                        href={`${job.posting_url}`}
+                        className="text-blue-600 hover:underline"
+                      >
+                        {"View Job"}
+                      </Link>
+                    </td>
                     <td className="px-4 py-3 text-slate-600">
                       {fmtLocation(job.locations)}
                     </td>
