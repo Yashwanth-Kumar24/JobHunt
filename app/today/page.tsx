@@ -15,121 +15,143 @@ type Job = {
 
 type CompanyMap = Record<string, string>;
 
-export default function TodaysJobsPage() {
+function toLocalDate(value: string) {
+  const d = new Date(value);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
+
+export default function LatestJobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [companyMap, setCompanyMap] = useState<CompanyMap>({});
   const [loading, setLoading] = useState(true);
 
   const [search, setSearch] = useState("");
+  const [selectedDate, setSelectedDate] = useState<string>(todayISO());
 
   const [companyAsc, setCompanyAsc] = useState(true);
-  const [postedAsc, setPostedAsc] = useState(false);
-  const [sortByPosted, setSortByPosted] = useState(true);
-
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
-  useEffect(() => {
-    async function loadData() {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+  
+  function toISODate(d: Date) {
+    return d.toISOString().split("T")[0];
+  }
 
-      const { data: jobsData } = await supabase
-        .from("jobs")
-        .select(`
-          title,
-          posting_url,
-          posted_at,
-          job_id,
-          locations,
-          company_id
-        `)
-        .gte("posted_at", today.toISOString())
-        .order("posted_at", { ascending: false });
+  function addDays(dateStr: string, days: number) {
+    const d = new Date(dateStr);
+    d.setDate(d.getDate() + days);
+    return toISODate(d);
+  }
 
-      if (!jobsData) {
-        setLoading(false);
-        return;
-      }
+  function todayISO() {
+    return toISODate(new Date());
+  }
 
-      setJobs(jobsData as Job[]);
+  // ---------------------------
+  // Fetch last 7 days ONLY
+  // ---------------------------
+  async function fetchJobs() {
+    setLoading(true);
 
-      const companyIds = Array.from(
-        new Set(jobsData.map(j => j.company_id))
-      );
+    const from = new Date();
+    from.setDate(from.getDate() - 7);
+    from.setHours(0, 0, 0, 0);
 
-      const { data: companies } = await supabase
-        .from("companies")
-        .select("id, name")
-        .in("id", companyIds);
+    const { data: jobsData } = await supabase
+      .from("jobs")
+      .select(`
+        title,
+        posting_url,
+        posted_at,
+        job_id,
+        locations,
+        company_id
+      `)
+      .gte("posted_at", from.toISOString())
+      .order("posted_at", { ascending: false });
 
-      if (companies) {
-        const map: CompanyMap = {};
-        companies.forEach(c => {
-          map[c.id] = c.name;
-        });
-        setCompanyMap(map);
-      }
-
+    if (!jobsData) {
+      setJobs([]);
       setLoading(false);
+      return;
     }
 
-    loadData();
+    setJobs(jobsData as Job[]);
+
+    const companyIds = Array.from(new Set(jobsData.map(j => j.company_id)));
+
+    const { data: companies } = await supabase
+      .from("companies")
+      .select("id, name")
+      .in("id", companyIds);
+
+    if (companies) {
+      const map: CompanyMap = {};
+      companies.forEach(c => (map[c.id] = c.name));
+      setCompanyMap(map);
+    }
+
+    setPage(1);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    fetchJobs();
   }, []);
 
-  // 🔍 SEARCH
+  // ---------------------------
+  // Search + local date filter
+  // ---------------------------
   const filteredJobs = useMemo(() => {
-    if (!search.trim()) return jobs;
+    let data = jobs;
 
-    const q = search.toLowerCase();
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      data = data.filter(j => {
+        const company = companyMap[j.company_id]?.toLowerCase() || "";
+        const title = j.title.toLowerCase();
+        const jobId = j.job_id?.toLowerCase() || "";
+        const location =
+          typeof j.locations === "string"
+            ? j.locations.toLowerCase()
+            : Array.isArray(j.locations)
+            ? j.locations.join(", ").toLowerCase()
+            : "";
 
-    return jobs.filter(j => {
-      const company = companyMap[j.company_id]?.toLowerCase() || "";
-      const title = j.title.toLowerCase();
-      const jobId = j.job_id?.toLowerCase() || "";
-      const location =
-        typeof j.locations === "string"
-          ? j.locations.toLowerCase()
-          : Array.isArray(j.locations)
-          ? j.locations.join(", ").toLowerCase()
-          : "";
-
-      return (
-        company.includes(q) ||
-        title.includes(q) ||
-        jobId.includes(q) ||
-        location.includes(q)
-      );
-    });
-  }, [jobs, companyMap, search]);
-
-  // 🔤 SORTING
-  const sortedJobs = useMemo(() => {
-    const data = [...filteredJobs];
-
-    if (sortByPosted) {
-      return data.sort((a, b) => {
-        const da = new Date(a.posted_at).getTime();
-        const db = new Date(b.posted_at).getTime();
-        return postedAsc ? da - db : db - da;
+        return (
+          company.includes(q) ||
+          title.includes(q) ||
+          jobId.includes(q) ||
+          location.includes(q)
+        );
       });
     }
 
-    return data.sort((a, b) => {
+    if (selectedDate) {
+      data = data.filter(j => toLocalDate(j.posted_at) === selectedDate);
+    }
+
+    return data;
+  }, [jobs, companyMap, search, selectedDate]);
+
+  // ---------------------------
+  // Sort by company
+  // ---------------------------
+  const sortedJobs = useMemo(() => {
+    return [...filteredJobs].sort((a, b) => {
       const aName = companyMap[a.company_id] || "";
       const bName = companyMap[b.company_id] || "";
       return companyAsc
         ? aName.localeCompare(bName)
         : bName.localeCompare(aName);
     });
-  }, [
-    filteredJobs,
-    companyMap,
-    companyAsc,
-    postedAsc,
-    sortByPosted,
-  ]);
+  }, [filteredJobs, companyMap, companyAsc]);
 
+  // ---------------------------
+  // Pagination
+  // ---------------------------
   const totalPages = Math.ceil(sortedJobs.length / pageSize);
   const start = (page - 1) * pageSize;
   const paginatedJobs = sortedJobs.slice(start, start + pageSize);
@@ -149,10 +171,10 @@ export default function TodaysJobsPage() {
     <main className="min-h-screen bg-slate-50 p-6">
       <div className="max-w-7xl mx-auto">
         <h1 className="text-3xl font-semibold text-slate-800 mb-2">
-          Today’s Jobs
+          Latest Jobs
         </h1>
         <p className="text-slate-600 mb-6">
-          All jobs posted today across companies
+          Jobs posted in the last 7 days
         </p>
 
         {/* Controls */}
@@ -161,18 +183,46 @@ export default function TodaysJobsPage() {
             type="text"
             placeholder="Search company, title, job ID, or location..."
             value={search}
-            onChange={(e) => {
+            onChange={e => {
               setSearch(e.target.value);
               setPage(1);
             }}
-            className="w-full sm:w-96 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-blue-200"
+            className="w-full sm:w-96 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
           />
 
-          <div className="flex items-center gap-2 text-sm text-slate-600">
+          <div className="flex items-center gap-2">
+            {/* Previous Day */}
+            <button
+              onClick={() => setSelectedDate(addDays(selectedDate, -1))}
+              className="rounded-md border px-2 py-1 text-sm hover:bg-slate-100"
+            >
+              ⬅️
+            </button>
+
+            {/* Date Picker */}
+            <input
+              type="date"
+              value={selectedDate}
+              max={todayISO()}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+            />
+
+            {/* Next Day */}
+            <button
+              disabled={selectedDate >= todayISO()}
+              onClick={() => setSelectedDate(addDays(selectedDate, 1))}
+              className="rounded-md border px-2 py-1 text-sm hover:bg-slate-100 disabled:opacity-40"
+            >
+              ➡️
+            </button>
+          </div>
+
+          <div className="ml-auto flex items-center gap-2 text-sm text-slate-600">
             <span>Rows</span>
             <select
               value={pageSize}
-              onChange={(e) => {
+              onChange={e => {
                 setPageSize(Number(e.target.value));
                 setPage(1);
               }}
@@ -184,46 +234,27 @@ export default function TodaysJobsPage() {
             </select>
           </div>
 
-          <span className="ml-auto text-sm text-slate-600">
+          <span className="text-sm text-slate-600">
             Page {page} of {totalPages || 1}
           </span>
         </div>
 
         {!loading && paginatedJobs.length > 0 && (
           <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-            <table className="min-w-full text-sm">
+            <table className="min-w-full text-sm table-fixed">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
                   <th
                     className="px-4 py-3 text-left font-medium cursor-pointer"
-                    onClick={() => {
-                      setSortByPosted(false);
-                      setCompanyAsc(!companyAsc);
-                    }}
+                    onClick={() => setCompanyAsc(!companyAsc)}
                   >
                     Company {companyAsc ? "↑" : "↓"}
                   </th>
-                  <th className="px-4 py-3 text-left font-medium">
-                    Title
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium">
-                    Job ID
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium">
-                    Link
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium">
-                    Location
-                  </th>
-                  <th
-                    className="px-4 py-3 text-left font-medium cursor-pointer"
-                    onClick={() => {
-                      setSortByPosted(true);
-                      setPostedAsc(!postedAsc);
-                    }}
-                  >
-                    Posted {sortByPosted ? (postedAsc ? "↑" : "↓") : ""}
-                  </th>
+                  <th className="px-4 py-3 text-left font-medium">Title</th>
+                  <th className="px-4 py-3 text-left font-medium">Job ID</th>
+                  <th className="px-4 py-3 text-left font-medium">Link</th>
+                  <th className="px-4 py-3 text-left font-medium">Location</th>
+                  <th className="px-4 py-3 text-left font-medium">Posted</th>
                 </tr>
               </thead>
 
@@ -231,7 +262,7 @@ export default function TodaysJobsPage() {
                 {paginatedJobs.map((job, idx) => (
                   <tr
                     key={idx}
-                    className="border-b border-slate-100 hover:bg-slate-50 transition"
+                    className="border-b border-slate-100 hover:bg-slate-50"
                   >
                     <td className="px-4 py-3">
                       <Link
@@ -241,32 +272,20 @@ export default function TodaysJobsPage() {
                         {companyMap[job.company_id] || "Unknown"}
                       </Link>
                     </td>
-
-                    <td className="px-4 py-3 font-medium text-slate-800">
-                      {job.title}
-                    </td>
-
-                    <td className="px-4 py-3 text-slate-600">
-                      {job.job_id ?? "-"}
-                    </td>
-
-                    <td className="px-4 py-3 text-slate-600">
-                      <Link
-                        target="_blank"
+                    <td className="px-4 py-3 font-medium">{job.title}</td>
+                    <td className="px-4 py-3">{job.job_id ?? "-"}</td>
+                    <td className="px-4 py-3">
+                      <a
                         href={job.posting_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="text-blue-600 hover:underline"
                       >
                         View Job
-                      </Link>
+                      </a>
                     </td>
-
-                    <td className="px-4 py-3 text-slate-600">
-                      {fmtLocation(job.locations)}
-                    </td>
-
-                    <td className="px-4 py-3 text-slate-600">
-                      {fmtDateTime(job.posted_at)}
-                    </td>
+                    <td className="px-4 py-3">{fmtLocation(job.locations)}</td>
+                    <td className="px-4 py-3">{fmtDateTime(job.posted_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -278,7 +297,7 @@ export default function TodaysJobsPage() {
         <div className="mt-6 flex justify-between">
           <button
             disabled={page === 1}
-            onClick={() => setPage(page - 1)}
+            onClick={() => setPage(p => p - 1)}
             className="rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm disabled:opacity-50"
           >
             Prev
@@ -286,7 +305,7 @@ export default function TodaysJobsPage() {
 
           <button
             disabled={page === totalPages}
-            onClick={() => setPage(page + 1)}
+            onClick={() => setPage(p => p + 1)}
             className="rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm disabled:opacity-50"
           >
             Next
