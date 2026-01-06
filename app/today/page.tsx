@@ -252,6 +252,7 @@ export default function TodaysJobsPage() {
 
                     <td className="px-4 py-3 text-slate-600">
                       <Link
+                        target="_blank"
                         href={job.posting_url}
                         className="text-blue-600 hover:underline"
                       >
