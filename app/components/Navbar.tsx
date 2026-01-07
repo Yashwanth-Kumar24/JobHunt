@@ -13,7 +13,7 @@ export default function Navbar() {
       <div className="mx-auto max-w-7xl px-6">
         <div className="flex h-14 items-center gap-6">
         <Link
-            href="/today"
+            href="/latest"
             className={`text-sm font-medium ${
               isActive("/latest")
                 ? "text-blue-600 border-b-2 border-blue-600 pb-3"
