@@ -15,12 +15,12 @@ export default function Navbar() {
         <Link
             href="/today"
             className={`text-sm font-medium ${
-              isActive("/today")
+              isActive("/latest")
                 ? "text-blue-600 border-b-2 border-blue-600 pb-3"
                 : "text-slate-600 hover:text-slate-800"
             }`}
           >
-            Today’s Jobs
+            Latest Jobs
           </Link>
 
           <Link

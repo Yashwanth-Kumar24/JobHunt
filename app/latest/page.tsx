@@ -22,6 +22,19 @@ function toLocalDate(value: string) {
   ).padStart(2, "0")}`;
 }
 
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
+
+function addDays(dateStr: string, days: number) {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split("T")[0];
+}
+
 export default function LatestJobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [companyMap, setCompanyMap] = useState<CompanyMap>({});
@@ -31,26 +44,14 @@ export default function LatestJobsPage() {
   const [selectedDate, setSelectedDate] = useState<string>(todayISO());
 
   const [companyAsc, setCompanyAsc] = useState(true);
+  const [postedAsc, setPostedAsc] = useState(false);
+  const [sortByPosted, setSortByPosted] = useState(true);
+
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
-  
-  function toISODate(d: Date) {
-    return d.toISOString().split("T")[0];
-  }
-
-  function addDays(dateStr: string, days: number) {
-    const d = new Date(dateStr);
-    d.setDate(d.getDate() + days);
-    return toISODate(d);
-  }
-
-  function todayISO() {
-    return toISODate(new Date());
-  }
-
   // ---------------------------
-  // Fetch last 7 days ONLY
+  // Fetch last 7 days
   // ---------------------------
   async function fetchJobs() {
     setLoading(true);
@@ -137,17 +138,27 @@ export default function LatestJobsPage() {
   }, [jobs, companyMap, search, selectedDate]);
 
   // ---------------------------
-  // Sort by company
+  // Sorting
   // ---------------------------
   const sortedJobs = useMemo(() => {
-    return [...filteredJobs].sort((a, b) => {
+    const data = [...filteredJobs];
+
+    if (sortByPosted) {
+      return data.sort((a, b) => {
+        const da = new Date(a.posted_at).getTime();
+        const db = new Date(b.posted_at).getTime();
+        return postedAsc ? da - db : db - da;
+      });
+    }
+
+    return data.sort((a, b) => {
       const aName = companyMap[a.company_id] || "";
       const bName = companyMap[b.company_id] || "";
       return companyAsc
         ? aName.localeCompare(bName)
         : bName.localeCompare(aName);
     });
-  }, [filteredJobs, companyMap, companyAsc]);
+  }, [filteredJobs, companyMap, companyAsc, postedAsc, sortByPosted]);
 
   // ---------------------------
   // Pagination
@@ -191,7 +202,6 @@ export default function LatestJobsPage() {
           />
 
           <div className="flex items-center gap-2">
-            {/* Previous Day */}
             <button
               onClick={() => setSelectedDate(addDays(selectedDate, -1))}
               className="rounded-md border px-2 py-1 text-sm hover:bg-slate-100"
@@ -199,16 +209,17 @@ export default function LatestJobsPage() {
               ⬅️
             </button>
 
-            {/* Date Picker */}
             <input
               type="date"
               value={selectedDate}
               max={todayISO()}
-              onChange={(e) => setSelectedDate(e.target.value)}
+              onChange={e => {
+                setSelectedDate(e.target.value);
+                setPage(1);
+              }}
               className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             />
 
-            {/* Next Day */}
             <button
               disabled={selectedDate >= todayISO()}
               onClick={() => setSelectedDate(addDays(selectedDate, 1))}
@@ -246,7 +257,10 @@ export default function LatestJobsPage() {
                 <tr>
                   <th
                     className="px-4 py-3 text-left font-medium cursor-pointer"
-                    onClick={() => setCompanyAsc(!companyAsc)}
+                    onClick={() => {
+                      setSortByPosted(false);
+                      setCompanyAsc(!companyAsc);
+                    }}
                   >
                     Company {companyAsc ? "↑" : "↓"}
                   </th>
@@ -254,7 +268,15 @@ export default function LatestJobsPage() {
                   <th className="px-4 py-3 text-left font-medium">Job ID</th>
                   <th className="px-4 py-3 text-left font-medium">Link</th>
                   <th className="px-4 py-3 text-left font-medium">Location</th>
-                  <th className="px-4 py-3 text-left font-medium">Posted</th>
+                  <th
+                    className="px-4 py-3 text-left font-medium cursor-pointer"
+                    onClick={() => {
+                      setSortByPosted(true);
+                      setPostedAsc(!postedAsc);
+                    }}
+                  >
+                    Posted {sortByPosted ? (postedAsc ? "↑" : "↓") : ""}
+                  </th>
                 </tr>
               </thead>
 
@@ -293,7 +315,6 @@ export default function LatestJobsPage() {
           </div>
         )}
 
-        {/* Pagination */}
         <div className="mt-6 flex justify-between">
           <button
             disabled={page === 1}
