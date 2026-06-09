@@ -82,7 +82,7 @@ export default function LatestJobsPage() {
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
-  const [range, setRange] = useState<Range>(7);
+  const [range, setRange] = useState<Range>(30);
   const [search, setSearch] = useState("");
   const [selectedDate, setSelectedDate] = useState<string>(todayISO());
   const [appliedFilter, setAppliedFilter] = useState<AppliedFilter>("all");
