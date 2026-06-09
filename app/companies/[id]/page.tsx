@@ -38,6 +38,7 @@ export default function JobsPage() {
 
   const [search, setSearch] = useState("");
   const [ascending, setAscending] = useState(false);
+  const [compact, setCompact] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
@@ -50,9 +51,7 @@ export default function JobsPage() {
       .select("name")
       .eq("id", companyId)
       .single()
-      .then(({ data }) => {
-        if (data?.name) setCompanyName(data.name);
-      });
+      .then(({ data }) => { if (data?.name) setCompanyName(data.name); });
   }, [companyId]);
 
   useEffect(() => {
@@ -92,10 +91,15 @@ export default function JobsPage() {
   }, [filteredJobs, ascending]);
 
   const totalPages = Math.max(1, Math.ceil(sortedJobs.length / pageSize));
-  const start = (page - 1) * pageSize;
-  const paginatedJobs = sortedJobs.slice(start, start + pageSize);
+  const paginatedJobs = sortedJobs.slice((page - 1) * pageSize, page * pageSize);
 
-  const appliedCount = jobs.filter(j => isApplied(j.id)).length;
+  const appliedCount = useMemo(
+    () => jobs.filter(j => isApplied(j.id)).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [jobs, isApplied]
+  );
+
+  const cellPad = compact ? "px-4 py-1.5" : "px-4 py-3";
 
   return (
     <main className="min-h-screen bg-slate-50 p-6">
@@ -112,12 +116,14 @@ export default function JobsPage() {
         {/* Header */}
         <div className="mb-6">
           <h1 className="text-3xl font-semibold text-slate-800 mb-1">
-            {companyName ? `${companyName}` : "Company Jobs"}
+            {companyName || "Company Jobs"}
           </h1>
           {!loading && !error && (
             <p className="text-slate-500 text-sm">
               {jobs.length} total role{jobs.length !== 1 ? "s" : ""}
-              {appliedCount > 0 && ` · ${appliedCount} applied`}
+              {appliedCount > 0 && (
+                <span className="ml-2 text-green-600 font-medium">· {appliedCount} applied</span>
+              )}
             </p>
           )}
         </div>
@@ -131,6 +137,28 @@ export default function JobsPage() {
             onChange={e => { setSearch(e.target.value); setPage(1); }}
             className="w-full sm:w-80 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
           />
+
+          {/* Density toggle */}
+          <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
+            <button
+              onClick={() => setCompact(false)}
+              title="Comfortable view"
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                !compact ? "bg-slate-700 text-white" : "text-slate-500 hover:bg-slate-100"
+              }`}
+            >
+              ▣
+            </button>
+            <button
+              onClick={() => setCompact(true)}
+              title="Compact view"
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                compact ? "bg-slate-700 text-white" : "text-slate-500 hover:bg-slate-100"
+              }`}
+            >
+              ▤
+            </button>
+          </div>
 
           <div className="ml-auto flex items-center gap-3 text-sm text-slate-600">
             <div className="flex items-center gap-2">
@@ -176,17 +204,17 @@ export default function JobsPage() {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 text-slate-700 sticky top-0 z-10">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium">Title</th>
-                  <th className="px-4 py-3 text-left font-medium whitespace-nowrap">Job ID</th>
-                  <th className="px-4 py-3 text-left font-medium">Link</th>
-                  <th className="px-4 py-3 text-left font-medium">Location</th>
+                  <th className={`${cellPad} text-left font-medium`}>Title</th>
+                  <th className={`${cellPad} text-left font-medium whitespace-nowrap`}>Job ID</th>
+                  <th className={`${cellPad} text-left font-medium`}>Link</th>
+                  <th className={`${cellPad} text-left font-medium`}>Location</th>
                   <th
-                    className="px-4 py-3 text-left font-medium cursor-pointer select-none whitespace-nowrap"
+                    className={`${cellPad} text-left font-medium cursor-pointer select-none whitespace-nowrap`}
                     onClick={() => { setAscending(a => !a); setPage(1); }}
                   >
                     Posted On {ascending ? "↑" : "↓"}
                   </th>
-                  <th className="px-4 py-3 text-left font-medium">Applied</th>
+                  <th className={`${cellPad} text-left font-medium`}>Applied</th>
                 </tr>
               </thead>
               <tbody>
@@ -199,21 +227,21 @@ export default function JobsPage() {
                         wasApplied ? "bg-green-50 hover:bg-green-100" : "hover:bg-slate-50"
                       }`}
                     >
-                      <td className="px-4 py-3 font-medium text-slate-800">{job.title}</td>
-                      <td className="px-4 py-3 text-slate-500">{job.job_id ?? "-"}</td>
-                      <td className="px-4 py-3">
+                      <td className={`${cellPad} font-medium text-slate-800`}>{job.title}</td>
+                      <td className={`${cellPad} text-slate-500`}>{job.job_id ?? "-"}</td>
+                      <td className={`${cellPad}`}>
                         <a
                           href={job.posting_url}
                           target="_blank"
                           rel="noreferrer"
                           className="text-blue-600 hover:underline"
                         >
-                          Open
+                          Open ↗
                         </a>
                       </td>
-                      <td className="px-4 py-3 text-slate-600">{fmtLocation(job.locations)}</td>
-                      <td className="px-4 py-3 text-slate-500">{fmt(job.posted_at)}</td>
-                      <td className="px-4 py-3">
+                      <td className={`${cellPad} text-slate-600`}>{fmtLocation(job.locations)}</td>
+                      <td className={`${cellPad} text-slate-500`}>{fmt(job.posted_at)}</td>
+                      <td className={`${cellPad}`}>
                         <button
                           onClick={() => toggle(job.id)}
                           className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
