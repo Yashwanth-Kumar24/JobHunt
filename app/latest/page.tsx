@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
+import { useApplied } from "@/lib/useApplied";
 
 type Job = {
   id: string;
@@ -15,25 +16,24 @@ type Job = {
 };
 
 type CompanyMap = Record<string, string>;
+type Range = 1 | 3 | 7 | 30;
+type AppliedFilter = "all" | "applied" | "not_applied";
 
 function toLocalDate(value: string) {
   const d = new Date(value);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate()
-  ).padStart(2, "0")}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function todayISO() {
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate()
-  ).padStart(2, "0")}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function addDays(dateStr: string, days: number) {
-  const d = new Date(dateStr);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().split("T")[0];
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function fmtLocation(loc: any): string {
@@ -47,28 +47,39 @@ function fmtDateTime(value: string) {
   return new Date(value).toLocaleString();
 }
 
+const RANGE_OPTIONS: { label: string; value: Range }[] = [
+  { label: "Today", value: 1 },
+  { label: "3 Days", value: 3 },
+  { label: "7 Days", value: 7 },
+  { label: "30 Days", value: 30 },
+];
+
 export default function LatestJobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [companyMap, setCompanyMap] = useState<CompanyMap>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [range, setRange] = useState<Range>(7);
   const [search, setSearch] = useState("");
   const [selectedDate, setSelectedDate] = useState<string>(todayISO());
+  const [appliedFilter, setAppliedFilter] = useState<AppliedFilter>("all");
 
   const [companyAsc, setCompanyAsc] = useState(true);
   const [postedAsc, setPostedAsc] = useState(false);
   const [sortByPosted, setSortByPosted] = useState(true);
 
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(20);
 
-  async function fetchJobs() {
+  const { applied, toggle, isApplied } = useApplied();
+
+  async function fetchJobs(r: Range = range) {
     setLoading(true);
     setError(null);
 
     const from = new Date();
-    from.setDate(from.getDate() - 7);
+    from.setDate(from.getDate() - (r - 1));
     from.setHours(0, 0, 0, 0);
 
     const { data: jobsData, error: jobsErr } = await supabase
@@ -85,6 +96,7 @@ export default function LatestJobsPage() {
 
     if (!jobsData || jobsData.length === 0) {
       setJobs([]);
+      setCompanyMap({});
       setLoading(false);
       return;
     }
@@ -108,8 +120,22 @@ export default function LatestJobsPage() {
   }
 
   useEffect(() => {
-    fetchJobs();
-  }, []);
+    fetchJobs(range);
+  }, [range]);
+
+  // Stats computed from raw unfiltered jobs
+  const stats = useMemo(() => {
+    const today = todayISO();
+    const todayCount = jobs.filter(j => toLocalDate(j.posted_at) === today).length;
+    const companiesCount = new Set(jobs.map(j => j.company_id)).size;
+    const appliedCount = jobs.filter(j => applied.has(j.id)).length;
+    return {
+      total: jobs.length,
+      today: todayCount,
+      companies: companiesCount,
+      appliedCount,
+    };
+  }, [jobs, applied]);
 
   const filteredJobs = useMemo(() => {
     let data = jobs;
@@ -129,12 +155,17 @@ export default function LatestJobsPage() {
       data = data.filter(j => toLocalDate(j.posted_at) === selectedDate);
     }
 
+    if (appliedFilter === "applied") {
+      data = data.filter(j => applied.has(j.id));
+    } else if (appliedFilter === "not_applied") {
+      data = data.filter(j => !applied.has(j.id));
+    }
+
     return data;
-  }, [jobs, companyMap, search, selectedDate]);
+  }, [jobs, companyMap, search, selectedDate, appliedFilter, applied]);
 
   const sortedJobs = useMemo(() => {
     const data = [...filteredJobs];
-
     if (sortByPosted) {
       return data.sort((a, b) => {
         const da = new Date(a.posted_at).getTime();
@@ -142,7 +173,6 @@ export default function LatestJobsPage() {
         return postedAsc ? da - db : db - da;
       });
     }
-
     return data.sort((a, b) => {
       const aName = companyMap[a.company_id] ?? "";
       const bName = companyMap[b.company_id] ?? "";
@@ -157,87 +187,141 @@ export default function LatestJobsPage() {
   return (
     <main className="min-h-screen bg-slate-50 p-6">
       <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-semibold text-slate-800 mb-2">Latest Jobs</h1>
-        <p className="text-slate-600 mb-6">Jobs posted in the last 7 days</p>
 
-        {/* Controls */}
-        <div className="flex flex-wrap items-center gap-4 mb-4">
+        {/* Header */}
+        <div className="mb-6">
+          <h1 className="text-3xl font-semibold text-slate-800 mb-1">Latest Jobs</h1>
+          <p className="text-slate-500 text-sm">Engineering roles scraped from 30+ companies</p>
+        </div>
+
+        {/* Stats Bar */}
+        {!loading && !error && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+            <div className="rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+              <p className="text-xs text-slate-500 mb-1">In Range</p>
+              <p className="text-2xl font-semibold text-slate-800">{stats.total}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+              <p className="text-xs text-slate-500 mb-1">Posted Today</p>
+              <p className="text-2xl font-semibold text-blue-600">{stats.today}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+              <p className="text-xs text-slate-500 mb-1">Companies</p>
+              <p className="text-2xl font-semibold text-slate-800">{stats.companies}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+              <p className="text-xs text-slate-500 mb-1">Applied</p>
+              <p className="text-2xl font-semibold text-green-600">{stats.appliedCount}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Controls Row 1: Range + Search */}
+        <div className="flex flex-wrap items-center gap-3 mb-3">
+          <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
+            {RANGE_OPTIONS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => {
+                  setRange(opt.value);
+                  setPage(1);
+                }}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                  range === opt.value
+                    ? "bg-blue-600 text-white"
+                    : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
           <input
             type="text"
             placeholder="Search company, title, job ID, or location..."
             value={search}
-            onChange={e => {
-              setSearch(e.target.value);
-              setPage(1);
-            }}
-            className="w-full sm:w-96 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+            onChange={e => { setSearch(e.target.value); setPage(1); }}
+            className="flex-1 min-w-60 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
           />
+        </div>
 
-          <div className="flex items-center gap-2">
+        {/* Controls Row 2: Date nav + Applied filter + Rows + Page info */}
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <div className="flex items-center gap-1">
             <button
-              onClick={() => {
-                setSelectedDate(addDays(selectedDate, -1));
-                setPage(1);
-              }}
-              className="rounded-md border px-2 py-1 text-sm hover:bg-slate-100"
+              onClick={() => { setSelectedDate(addDays(selectedDate, -1)); setPage(1); }}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm hover:bg-slate-100"
             >
-              ⬅️
+              ←
             </button>
             <input
               type="date"
               value={selectedDate}
               max={todayISO()}
-              onChange={e => {
-                setSelectedDate(e.target.value);
-                setPage(1);
-              }}
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+              onChange={e => { setSelectedDate(e.target.value); setPage(1); }}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm focus:outline-none"
             />
             <button
               disabled={selectedDate >= todayISO()}
-              onClick={() => {
-                setSelectedDate(addDays(selectedDate, 1));
-                setPage(1);
-              }}
-              className="rounded-md border px-2 py-1 text-sm hover:bg-slate-100 disabled:opacity-40"
+              onClick={() => { setSelectedDate(addDays(selectedDate, 1)); setPage(1); }}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm hover:bg-slate-100 disabled:opacity-40"
             >
-              ➡️
+              →
             </button>
           </div>
 
-          <div className="ml-auto flex items-center gap-2 text-sm text-slate-600">
-            <span>Rows</span>
-            <select
-              value={pageSize}
-              onChange={e => {
-                setPageSize(Number(e.target.value));
-                setPage(1);
-              }}
-              className="rounded-md border border-slate-300 bg-white px-2 py-1"
-            >
-              {[10, 20, 30, 50, 100].map(n => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
+          <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
+            {(["all", "not_applied", "applied"] as AppliedFilter[]).map(f => (
+              <button
+                key={f}
+                onClick={() => { setAppliedFilter(f); setPage(1); }}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                  appliedFilter === f
+                    ? f === "applied"
+                      ? "bg-green-600 text-white"
+                      : f === "not_applied"
+                      ? "bg-slate-700 text-white"
+                      : "bg-blue-600 text-white"
+                    : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                {f === "all" ? "All" : f === "applied" ? "Applied" : "Not Applied"}
+              </button>
+            ))}
           </div>
 
-          <span className="text-sm text-slate-600">
-            Page {page} of {totalPages}
-          </span>
+          <div className="ml-auto flex items-center gap-3 text-sm text-slate-600">
+            <div className="flex items-center gap-2">
+              <span>Rows</span>
+              <select
+                value={pageSize}
+                onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
+                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm"
+              >
+                {[10, 20, 30, 50, 100].map(n => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </div>
+            <span className="text-slate-500">
+              {sortedJobs.length} result{sortedJobs.length !== 1 ? "s" : ""} · Page {page}/{totalPages}
+            </span>
+          </div>
         </div>
 
         {/* States */}
         {loading && (
-          <div className="rounded-xl border border-slate-200 bg-white p-12 text-center text-slate-500 shadow-sm">
+          <div className="rounded-xl border border-slate-200 bg-white p-16 text-center text-slate-500 shadow-sm">
             Loading jobs...
           </div>
         )}
 
         {!loading && error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-8 text-center shadow-sm">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-10 text-center shadow-sm">
             <p className="text-red-600 mb-3">{error}</p>
             <button
-              onClick={fetchJobs}
+              onClick={() => fetchJobs()}
               className="rounded-md border border-red-300 px-4 py-1.5 text-sm text-red-600 hover:bg-red-100"
             >
               Retry
@@ -246,7 +330,7 @@ export default function LatestJobsPage() {
         )}
 
         {!loading && !error && sortedJobs.length === 0 && (
-          <div className="rounded-xl border border-slate-200 bg-white p-12 text-center text-slate-500 shadow-sm">
+          <div className="rounded-xl border border-slate-200 bg-white p-16 text-center text-slate-500 shadow-sm">
             {search
               ? "No jobs match your search."
               : `No jobs found for ${selectedDate}.`}
@@ -256,87 +340,98 @@ export default function LatestJobsPage() {
         {/* Table */}
         {!loading && !error && paginatedJobs.length > 0 && (
           <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-            <table className="min-w-full text-sm table-fixed">
-              <thead className="bg-slate-100 text-slate-700">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-100 text-slate-700 sticky top-0 z-10">
                 <tr>
                   <th
-                    className="px-4 py-3 text-left font-medium cursor-pointer select-none"
-                    onClick={() => {
-                      setSortByPosted(false);
-                      setCompanyAsc(!companyAsc);
-                      setPage(1);
-                    }}
+                    className="px-4 py-3 text-left font-medium cursor-pointer select-none whitespace-nowrap"
+                    onClick={() => { setSortByPosted(false); setCompanyAsc(!companyAsc); setPage(1); }}
                   >
-                    Company {!sortByPosted ? (companyAsc ? "↑" : "↓") : "⇅"}
+                    Company {!sortByPosted ? (companyAsc ? "↑" : "↓") : <span className="text-slate-400">⇅</span>}
                   </th>
                   <th className="px-4 py-3 text-left font-medium">Title</th>
-                  <th className="px-4 py-3 text-left font-medium">Job ID</th>
+                  <th className="px-4 py-3 text-left font-medium whitespace-nowrap">Job ID</th>
                   <th className="px-4 py-3 text-left font-medium">Link</th>
                   <th className="px-4 py-3 text-left font-medium">Location</th>
                   <th
-                    className="px-4 py-3 text-left font-medium cursor-pointer select-none"
-                    onClick={() => {
-                      setSortByPosted(true);
-                      setPostedAsc(!postedAsc);
-                      setPage(1);
-                    }}
+                    className="px-4 py-3 text-left font-medium cursor-pointer select-none whitespace-nowrap"
+                    onClick={() => { setSortByPosted(true); setPostedAsc(!postedAsc); setPage(1); }}
                   >
-                    Posted {sortByPosted ? (postedAsc ? "↑" : "↓") : "⇅"}
+                    Posted {sortByPosted ? (postedAsc ? "↑" : "↓") : <span className="text-slate-400">⇅</span>}
                   </th>
+                  <th className="px-4 py-3 text-left font-medium">Applied</th>
                 </tr>
               </thead>
               <tbody>
-                {paginatedJobs.map(job => (
-                  <tr
-                    key={job.id}
-                    className="border-b border-slate-100 hover:bg-slate-50"
-                  >
-                    <td className="px-4 py-3">
-                      <Link
-                        href={`/companies/${job.company_id}`}
-                        className="text-blue-600 hover:underline"
-                      >
-                        {companyMap[job.company_id] ?? "Unknown"}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3 font-medium">{job.title}</td>
-                    <td className="px-4 py-3">{job.job_id ?? "-"}</td>
-                    <td className="px-4 py-3">
-                      <a
-                        href={job.posting_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
-                        View Job
-                      </a>
-                    </td>
-                    <td className="px-4 py-3">{fmtLocation(job.locations)}</td>
-                    <td className="px-4 py-3">{fmtDateTime(job.posted_at)}</td>
-                  </tr>
-                ))}
+                {paginatedJobs.map(job => {
+                  const wasApplied = isApplied(job.id);
+                  return (
+                    <tr
+                      key={job.id}
+                      className={`border-b border-slate-100 transition-colors ${
+                        wasApplied ? "bg-green-50 hover:bg-green-100" : "hover:bg-slate-50"
+                      }`}
+                    >
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <Link
+                          href={`/companies/${job.company_id}`}
+                          className="text-blue-600 hover:underline"
+                        >
+                          {companyMap[job.company_id] ?? "Unknown"}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-800">{job.title}</td>
+                      <td className="px-4 py-3 text-slate-500">{job.job_id ?? "-"}</td>
+                      <td className="px-4 py-3">
+                        <a
+                          href={job.posting_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline"
+                        >
+                          View Job
+                        </a>
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">{fmtLocation(job.locations)}</td>
+                      <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{fmtDateTime(job.posted_at)}</td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => toggle(job.id)}
+                          className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                            wasApplied
+                              ? "border-green-400 bg-green-100 text-green-700 hover:bg-green-200"
+                              : "border-slate-300 bg-white text-slate-600 hover:bg-slate-100"
+                          }`}
+                        >
+                          {wasApplied ? "✓ Applied" : "Mark Applied"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
 
         {/* Pagination */}
-        <div className="mt-6 flex justify-between">
+        <div className="mt-5 flex justify-between">
           <button
             disabled={page <= 1}
             onClick={() => setPage(p => p - 1)}
-            className="rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm disabled:opacity-50"
+            className="rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50"
           >
-            Prev
+            ← Prev
           </button>
           <button
             disabled={page >= totalPages || sortedJobs.length === 0}
             onClick={() => setPage(p => p + 1)}
-            className="rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm disabled:opacity-50"
+            className="rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50"
           >
-            Next
+            Next →
           </button>
         </div>
+
       </div>
     </main>
   );
