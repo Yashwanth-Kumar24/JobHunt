@@ -101,17 +101,30 @@ export default function JobsPage() {
     if (!companyId) return;
     setLoading(true);
     setError(null);
-    supabase
-      .from("jobs")
-      .select("id, title, posting_url, posted_at, job_id, locations")
-      .eq("company_id", companyId)
-      .order("posted_at", { ascending: false })
-      .limit(5000)
-      .then(({ data, error: err }) => {
-        if (err) setError("Failed to load jobs. Please try again.");
-        else if (data) { setJobs(data); setPage(1); }
-        setLoading(false);
-      });
+
+    (async () => {
+      const allJobs: Job[] = [];
+      const BATCH = 1000;
+      let offset = 0;
+
+      while (true) {
+        const { data, error: err } = await supabase
+          .from("jobs")
+          .select("id, title, posting_url, posted_at, job_id, locations")
+          .eq("company_id", companyId)
+          .order("posted_at", { ascending: false })
+          .range(offset, offset + BATCH - 1);
+
+        if (err) { setError("Failed to load jobs. Please try again."); setLoading(false); return; }
+        if (data?.length) allJobs.push(...(data as Job[]));
+        if (!data || data.length < BATCH) break;
+        offset += BATCH;
+      }
+
+      setJobs(allJobs);
+      setPage(1);
+      setLoading(false);
+    })();
   }, [companyId]);
 
   const locationOptions = useMemo(() => {
