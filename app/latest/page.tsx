@@ -21,23 +21,42 @@ type CompanyMap = Record<string, string>;
 type Range = 1 | 3 | 7 | 30;
 type StatusFilter = "all" | "not_tracked" | JobStatus;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Date helpers ──────────────────────────────────────────────────────────────
 
-function toLocalDate(value: string) {
-  const d = new Date(value);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function todayISO() {
+function todayISO(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-function addDays(dateStr: string, days: number) {
+function toLocalDate(value: string): string {
+  const d = new Date(value);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function addDays(dateStr: string, days: number): string {
   const [y, m, d] = dateStr.split("-").map(Number);
   const date = new Date(y, m - 1, d);
   date.setDate(date.getDate() + days);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/** "Jun 10" — or "Today" for today's date */
+function pillLabel(dateStr: string): string {
+  if (dateStr === todayISO()) return "Today";
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** "Jun 10" for stats card heading */
+function shortDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function fmtLocation(loc: any): string {
@@ -47,8 +66,7 @@ function fmtLocation(loc: any): string {
   return "US";
 }
 
-// Fix #13: concise datetime — "Jun 10, 2:34 PM" instead of full toLocaleString
-function fmtDateTime(value: string) {
+function fmtDateTime(value: string): string {
   return new Date(value).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
@@ -78,33 +96,23 @@ const QUOTES = [
   "It doesn't take 100 yeses. It takes one.",
   "The offer exists. You just haven't found it yet.",
 ];
-function getDailyQuote() {
+function getDailyQuote(): string {
   const start = new Date(new Date().getFullYear(), 0, 0);
   const day = Math.floor((Date.now() - start.getTime()) / 86_400_000);
   return QUOTES[day % QUOTES.length];
 }
 
 const RANGE_OPTIONS: { label: string; value: Range }[] = [
-  { label: "Today", value: 1 },
-  { label: "3 Days", value: 3 },
-  { label: "7 Days", value: 7 },
+  { label: "Today",   value: 1  },
+  { label: "3 Days",  value: 3  },
+  { label: "7 Days",  value: 7  },
   { label: "30 Days", value: 30 },
 ];
 
-// Fix #6: NoteCell syncs local state when initial prop changes (e.g. note updated elsewhere)
-function NoteCell({
-  initial,
-  onSave,
-}: {
-  initial: string;
-  onSave: (v: string) => void;
-}) {
+// NoteCell isolated so parent doesn't re-render on every keystroke
+function NoteCell({ initial, onSave }: { initial: string; onSave: (v: string) => void }) {
   const [val, setVal] = useState(initial);
-
-  useEffect(() => {
-    setVal(initial);
-  }, [initial]);
-
+  useEffect(() => { setVal(initial); }, [initial]);
   return (
     <textarea
       value={val}
@@ -120,16 +128,15 @@ function NoteCell({
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function LatestJobsPage() {
-  const [jobs, setJobs]               = useState<Job[]>([]);
-  const [companyMap, setCompanyMap]   = useState<CompanyMap>({});
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState<string | null>(null);
-  const [exporting, setExporting]     = useState(false);
+  const [jobs, setJobs]             = useState<Job[]>([]);
+  const [companyMap, setCompanyMap] = useState<CompanyMap>({});
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState<string | null>(null);
+  const [exporting, setExporting]   = useState(false);
 
-  const [range, setRange]                   = useState<Range>(30);
+  const [range, setRange]                   = useState<Range>(7);
+  const [selectedDate, setSelectedDate]     = useState<string | null>(null); // null = All
   const [search, setSearch]                 = useState("");
-  // Fix #3: null = "show all dates in range" — no longer defaults to today
-  const [selectedDate, setSelectedDate]     = useState<string | null>(null);
   const [statusFilter, setStatusFilter]     = useState<StatusFilter>("all");
   const [locationFilter, setLocationFilter] = useState("");
   const [compact, setCompact]               = useState(false);
@@ -138,16 +145,13 @@ export default function LatestJobsPage() {
   const [postedAsc, setPostedAsc]       = useState(false);
   const [sortByPosted, setSortByPosted] = useState(true);
 
-  const [page, setPage]         = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [page, setPage]             = useState(1);
+  const [pageSize, setPageSize]     = useState(20);
   const [openNoteId, setOpenNoteId] = useState<string | null>(null);
 
   const { statuses, setStatus, getStatus, getNote, setNote } = useJobTracker();
   const lastVisit = useLastVisit();
   const quote = useMemo(() => getDailyQuote(), []);
-
-  // Fix #8: compute range start so date nav cannot go before fetched window
-  const rangeStart = useMemo(() => addDays(todayISO(), -(range - 1)), [range]);
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
 
@@ -194,7 +198,10 @@ export default function LatestJobsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { fetchJobs(range); }, [range]);
+  useEffect(() => {
+    setSelectedDate(null); // clear day selection when range changes
+    fetchJobs(range);
+  }, [range]);
 
   // ── Export CSV ────────────────────────────────────────────────────────────
 
@@ -202,24 +209,15 @@ export default function LatestJobsPage() {
     const stored = localStorage.getItem("jobhunt_status");
     const statusMap: Record<string, string> = stored ? JSON.parse(stored) : {};
     const ids = Object.keys(statusMap);
-
-    if (ids.length === 0) {
-      alert("No tracked jobs to export yet.");
-      return;
-    }
+    if (ids.length === 0) { alert("No tracked jobs to export yet."); return; }
 
     setExporting(true);
-
     const { data: jobsData } = await supabase
       .from("jobs")
       .select("id, title, posting_url, posted_at, job_id, locations, company_id")
       .in("id", ids);
 
-    if (!jobsData?.length) {
-      setExporting(false);
-      alert("Could not fetch job details.");
-      return;
-    }
+    if (!jobsData?.length) { setExporting(false); alert("Could not fetch job details."); return; }
 
     const companyIds = Array.from(new Set(jobsData.map(j => j.company_id)));
     const { data: companies } = await supabase.from("companies").select("id, name").in("id", companyIds);
@@ -255,7 +253,35 @@ export default function LatestJobsPage() {
     setExporting(false);
   }
 
-  // ── Derived data ──────────────────────────────────────────────────────────
+  // ── Day strip data ────────────────────────────────────────────────────────
+
+  /** Count of jobs per local date across the full fetched window */
+  const dayCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    jobs.forEach(j => {
+      const d = toLocalDate(j.posted_at);
+      counts[d] = (counts[d] ?? 0) + 1;
+    });
+    return counts;
+  }, [jobs]);
+
+  /** Ordered pills: oldest → newest, one per day in the range */
+  const dayPills = useMemo(() => {
+    const pills: { date: string; count: number }[] = [];
+    for (let i = range - 1; i >= 0; i--) {
+      const date = addDays(todayISO(), -i);
+      pills.push({ date, count: dayCounts[date] ?? 0 });
+    }
+    return pills;
+  }, [range, dayCounts]);
+
+  /** Today's total from the full unfiltered window — fixed reference point */
+  const todayTotal = useMemo(
+    () => dayCounts[todayISO()] ?? 0,
+    [dayCounts]
+  );
+
+  // ── Location options ──────────────────────────────────────────────────────
 
   const locationOptions = useMemo(() => {
     const set = new Set<string>();
@@ -267,16 +293,14 @@ export default function LatestJobsPage() {
     return [...set].sort();
   }, [jobs]);
 
-  const stats = useMemo(() => {
-    const today = todayISO();
-    const todayCount = jobs.filter(j => toLocalDate(j.posted_at) === today).length;
-    const companiesCount = new Set(jobs.map(j => j.company_id)).size;
-    const trackedCount = jobs.filter(j => j.id in statuses).length;
-    return { total: jobs.length, today: todayCount, companies: companiesCount, tracked: trackedCount };
-  }, [jobs, statuses]);
+  // ── Filter + Sort ─────────────────────────────────────────────────────────
 
   const filteredJobs = useMemo(() => {
     let data = jobs;
+
+    if (selectedDate) {
+      data = data.filter(j => toLocalDate(j.posted_at) === selectedDate);
+    }
 
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -286,11 +310,6 @@ export default function LatestJobsPage() {
           (j.job_id?.toLowerCase() ?? "").includes(q) ||
           fmtLocation(j.locations).toLowerCase().includes(q);
       });
-    }
-
-    // Fix #3: only apply date filter when a date is explicitly selected
-    if (selectedDate) {
-      data = data.filter(j => toLocalDate(j.posted_at) === selectedDate);
     }
 
     if (locationFilter) {
@@ -304,7 +323,14 @@ export default function LatestJobsPage() {
     }
 
     return data;
-  }, [jobs, companyMap, search, selectedDate, locationFilter, statusFilter, statuses]);
+  }, [jobs, companyMap, selectedDate, search, locationFilter, statusFilter, statuses]);
+
+  /** Stats derived from filteredJobs — update whenever the day strip / filters change */
+  const stats = useMemo(() => ({
+    showing:   filteredJobs.length,
+    companies: new Set(filteredJobs.map(j => j.company_id)).size,
+    tracked:   filteredJobs.filter(j => j.id in statuses).length,
+  }), [filteredJobs, statuses]);
 
   const sortedJobs = useMemo(() => {
     const data = [...filteredJobs];
@@ -320,11 +346,10 @@ export default function LatestJobsPage() {
     });
   }, [filteredJobs, companyMap, companyAsc, postedAsc, sortByPosted]);
 
-  const totalPages  = Math.max(1, Math.ceil(sortedJobs.length / pageSize));
+  const totalPages    = Math.max(1, Math.ceil(sortedJobs.length / pageSize));
   const paginatedJobs = sortedJobs.slice((page - 1) * pageSize, page * pageSize);
-  const cellPad     = compact ? "px-4 py-1.5" : "px-4 py-3";
-
-  const hasActiveFilters = !!search || !!selectedDate || !!locationFilter || statusFilter !== "all";
+  const cellPad       = compact ? "px-4 py-1.5" : "px-4 py-3";
+  const hasFilters    = !!search || !!locationFilter || statusFilter !== "all";
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -347,29 +372,42 @@ export default function LatestJobsPage() {
           </button>
         </div>
 
-        {/* Stats Bar */}
+        {/* Stats bar — always reflects current day/filter selection */}
         {!loading && !error && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
-            {[
-              { label: "In Range",     value: stats.total,    color: "text-slate-800 dark:text-slate-100" },
-              { label: "Posted Today", value: stats.today,    color: "text-blue-600 dark:text-blue-400" },
-              { label: "Companies",    value: stats.companies, color: "text-slate-800 dark:text-slate-100" },
-              { label: "Tracked",      value: stats.tracked,  color: "text-purple-600 dark:text-purple-400" },
-            ].map(s => (
-              <div key={s.label} className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-5 py-4 shadow-sm">
-                <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">{s.label}</p>
-                <p className={`text-2xl font-semibold ${s.color}`}>{s.value}</p>
-              </div>
-            ))}
+            {/* Card 1: context-aware label */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-5 py-4 shadow-sm">
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">
+                {selectedDate ? shortDate(selectedDate) : "In Range"}
+              </p>
+              <p className="text-2xl font-semibold text-slate-800 dark:text-slate-100">{stats.showing}</p>
+            </div>
+
+            {/* Card 2: today's count — fixed reference, never changes with selection */}
+            <div className="rounded-xl border border-blue-100 dark:border-slate-700 bg-white dark:bg-slate-800 px-5 py-4 shadow-sm">
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Today</p>
+              <p className="text-2xl font-semibold text-blue-600 dark:text-blue-400">{todayTotal}</p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-5 py-4 shadow-sm">
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Companies</p>
+              <p className="text-2xl font-semibold text-slate-800 dark:text-slate-100">{stats.companies}</p>
+            </div>
+
+            <div className="rounded-xl border border-purple-100 dark:border-slate-700 bg-white dark:bg-slate-800 px-5 py-4 shadow-sm">
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Tracked</p>
+              <p className="text-2xl font-semibold text-purple-600 dark:text-purple-400">{stats.tracked}</p>
+            </div>
           </div>
         )}
 
-        {/* Controls Row 1: Range + Search + Density */}
+        {/* Controls: Range + Search + Density */}
         <div className="flex flex-wrap items-center gap-3 mb-3">
           <div className="flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-1">
             {RANGE_OPTIONS.map(opt => (
-              <button key={opt.value}
-                onClick={() => { setRange(opt.value); setSelectedDate(null); setPage(1); }}
+              <button
+                key={opt.value}
+                onClick={() => { setRange(opt.value); setPage(1); }}
                 className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
                   range === opt.value
                     ? "bg-blue-600 text-white"
@@ -387,7 +425,6 @@ export default function LatestJobsPage() {
             className="flex-1 min-w-60 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:focus:ring-blue-800"
           />
 
-          {/* Density toggle */}
           <div className="flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-1">
             <button onClick={() => setCompact(false)} title="Comfortable"
               className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${!compact ? "bg-slate-700 dark:bg-slate-500 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
@@ -398,37 +435,58 @@ export default function LatestJobsPage() {
           </div>
         </div>
 
-        {/* Controls Row 2: Date nav + Status filter + Location + Rows */}
-        <div className="flex flex-wrap items-center gap-3 mb-4">
+        {/* Day Strip — replaces date picker entirely */}
+        {!loading && !error && (
+          <div className="mb-3">
+            <div className="flex gap-2 overflow-x-auto pb-1 scroll-smooth" style={{ scrollbarWidth: "none" }}>
 
-          {/* Fix #3 + #8: date picker with clear button, arrows clamped to range */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => { if (selectedDate) { setSelectedDate(addDays(selectedDate, -1)); setPage(1); } }}
-              disabled={!selectedDate || selectedDate <= rangeStart}
-              className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40"
-            >←</button>
-            <input
-              type="date"
-              value={selectedDate ?? ""}
-              min={rangeStart}
-              max={todayISO()}
-              onChange={e => { setSelectedDate(e.target.value || null); setPage(1); }}
-              className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-100 focus:outline-none"
-            />
-            <button
-              onClick={() => { if (selectedDate) { setSelectedDate(addDays(selectedDate, 1)); setPage(1); } }}
-              disabled={!selectedDate || selectedDate >= todayISO()}
-              className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40"
-            >→</button>
-            {selectedDate && (
+              {/* All pill */}
               <button
                 onClick={() => { setSelectedDate(null); setPage(1); }}
-                title="Show all dates"
-                className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
-              >✕</button>
-            )}
+                className={`shrink-0 flex flex-col items-center px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                  !selectedDate
+                    ? "bg-blue-600 border-blue-600 text-white"
+                    : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-300 dark:hover:border-blue-600"
+                }`}
+              >
+                <span className="text-xs leading-none mb-1 font-normal opacity-80">All</span>
+                <span className="text-base font-semibold leading-none">{jobs.length}</span>
+              </button>
+
+              {/* Day pills */}
+              {dayPills.map(({ date, count }) => {
+                const isToday    = date === todayISO();
+                const isSelected = selectedDate === date;
+                const hasJobs    = count > 0;
+
+                return (
+                  <button
+                    key={date}
+                    onClick={() => { setSelectedDate(isSelected ? null : date); setPage(1); }}
+                    disabled={!hasJobs}
+                    className={`shrink-0 flex flex-col items-center px-3 py-2 rounded-lg border text-sm transition-colors ${
+                      isSelected
+                        ? "bg-blue-600 border-blue-600 text-white"
+                        : isToday && hasJobs
+                        ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:border-blue-400 dark:hover:border-blue-500"
+                        : hasJobs
+                        ? "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-300 dark:hover:border-blue-600"
+                        : "bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-800 text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                    }`}
+                  >
+                    <span className={`text-xs leading-none mb-1 ${isSelected ? "opacity-80" : "font-normal"}`}>
+                      {pillLabel(date)}
+                    </span>
+                    <span className="text-base font-semibold leading-none">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
+        )}
+
+        {/* Controls Row 2: Status + Location + Rows + Page info */}
+        <div className="flex flex-wrap items-center gap-3 mb-4">
 
           {/* Status filter */}
           <div className="flex flex-wrap items-center gap-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-1">
@@ -437,7 +495,8 @@ export default function LatestJobsPage() {
               { label: "Not Tracked", value: "not_tracked" },
               ...Object.entries(STATUS_META).map(([k, v]) => ({ label: v.label, value: k })),
             ] as { label: string; value: StatusFilter }[]).map(opt => (
-              <button key={opt.value}
+              <button
+                key={opt.value}
                 onClick={() => { setStatusFilter(opt.value); setPage(1); }}
                 className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
                   statusFilter === opt.value
@@ -448,7 +507,6 @@ export default function LatestJobsPage() {
             ))}
           </div>
 
-          {/* Location filter — only shown when there are locations to choose from */}
           {locationOptions.length > 0 && (
             <select
               value={locationFilter}
@@ -495,9 +553,11 @@ export default function LatestJobsPage() {
         {!loading && !error && sortedJobs.length === 0 && (
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-16 text-center shadow-sm">
             <p className="text-slate-500 dark:text-slate-400 mb-2">
-              {hasActiveFilters ? "No jobs match your filters." : "No jobs found in this range."}
+              {selectedDate && !hasFilters
+                ? `No jobs posted on ${shortDate(selectedDate)}.`
+                : "No jobs match your filters."}
             </p>
-            {hasActiveFilters && (
+            {(selectedDate || hasFilters) && (
               <button
                 onClick={() => { setSearch(""); setSelectedDate(null); setLocationFilter(""); setStatusFilter("all"); setPage(1); }}
                 className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
@@ -512,7 +572,8 @@ export default function LatestJobsPage() {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 sticky top-0 z-10">
                 <tr>
-                  <th className={`${cellPad} text-left font-medium cursor-pointer select-none whitespace-nowrap`}
+                  <th
+                    className={`${cellPad} text-left font-medium cursor-pointer select-none whitespace-nowrap`}
                     onClick={() => { setSortByPosted(false); setCompanyAsc(!companyAsc); setPage(1); }}
                   >
                     Company {!sortByPosted ? (companyAsc ? "↑" : "↓") : <span className="text-slate-400">⇅</span>}
@@ -520,7 +581,8 @@ export default function LatestJobsPage() {
                   <th className={`${cellPad} text-left font-medium`}>Title</th>
                   <th className={`${cellPad} text-left font-medium whitespace-nowrap`}>Job ID</th>
                   <th className={`${cellPad} text-left font-medium`}>Location</th>
-                  <th className={`${cellPad} text-left font-medium cursor-pointer select-none whitespace-nowrap`}
+                  <th
+                    className={`${cellPad} text-left font-medium cursor-pointer select-none whitespace-nowrap`}
                     onClick={() => { setSortByPosted(true); setPostedAsc(!postedAsc); setPage(1); }}
                   >
                     Posted {sortByPosted ? (postedAsc ? "↑" : "↓") : <span className="text-slate-400">⇅</span>}
@@ -531,13 +593,12 @@ export default function LatestJobsPage() {
                 </tr>
               </thead>
               <tbody>
-                {/* Fix #1: React.Fragment with key instead of <> so React can track rows correctly */}
                 {paginatedJobs.map(job => {
-                  const status    = getStatus(job.id);
+                  const status     = getStatus(job.id);
                   const statusMeta = status ? STATUS_META[status] : null;
-                  const isNew     = lastVisit !== null && new Date(job.first_seen_at) > lastVisit;
-                  const hasNote   = !!getNote(job.id);
-                  const noteOpen  = openNoteId === job.id;
+                  const isNew      = lastVisit !== null && new Date(job.first_seen_at) > lastVisit;
+                  const hasNote    = !!getNote(job.id);
+                  const noteOpen   = openNoteId === job.id;
 
                   const rowBg = status === "rejected"
                     ? "bg-slate-50 dark:bg-slate-800/50 opacity-70"
@@ -606,10 +667,7 @@ export default function LatestJobsPage() {
                       {noteOpen && (
                         <tr className="border-b border-slate-100 dark:border-slate-700">
                           <td colSpan={8} className="px-4 pb-3 pt-1 bg-yellow-50/50 dark:bg-yellow-900/10">
-                            <NoteCell
-                              initial={getNote(job.id)}
-                              onSave={v => setNote(job.id, v)}
-                            />
+                            <NoteCell initial={getNote(job.id)} onSave={v => setNote(job.id, v)} />
                           </td>
                         </tr>
                       )}
@@ -623,10 +681,14 @@ export default function LatestJobsPage() {
 
         {/* Pagination */}
         <div className="mt-5 flex justify-between">
-          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}
+          <button
+            disabled={page <= 1}
+            onClick={() => setPage(p => p - 1)}
             className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-4 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50"
           >← Prev</button>
-          <button disabled={page >= totalPages || sortedJobs.length === 0} onClick={() => setPage(p => p + 1)}
+          <button
+            disabled={page >= totalPages || sortedJobs.length === 0}
+            onClick={() => setPage(p => p + 1)}
             className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-4 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50"
           >Next →</button>
         </div>
