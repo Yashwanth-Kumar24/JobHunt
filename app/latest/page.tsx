@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { useJobTracker, STATUS_META, type JobStatus } from "@/lib/useJobTracker";
@@ -19,7 +19,7 @@ type Job = {
 
 type CompanyMap = Record<string, string>;
 type Range = 1 | 3 | 7 | 30;
-type StatusFilter = "all" | JobStatus;
+type StatusFilter = "all" | "not_tracked" | JobStatus;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -27,28 +27,40 @@ function toLocalDate(value: string) {
   const d = new Date(value);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+
 function todayISO() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+
 function addDays(dateStr: string, days: number) {
   const [y, m, d] = dateStr.split("-").map(Number);
   const date = new Date(y, m - 1, d);
   date.setDate(date.getDate() + days);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
+
 function fmtLocation(loc: any): string {
   if (!loc) return "US";
   if (typeof loc === "string") return loc;
   if (Array.isArray(loc)) return loc.join(", ");
   return "US";
 }
+
+// Fix #13: concise datetime — "Jun 10, 2:34 PM" instead of full toLocaleString
 function fmtDateTime(value: string) {
-  return new Date(value).toLocaleString();
+  return new Date(value).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
+
 function daysSince(value: string): number {
   return Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000);
 }
+
 function freshnessClass(posted_at: string): string {
   const d = daysSince(posted_at);
   if (d === 0) return "text-green-600 dark:text-green-400 font-semibold";
@@ -79,15 +91,20 @@ const RANGE_OPTIONS: { label: string; value: Range }[] = [
   { label: "30 Days", value: 30 },
 ];
 
-const STATUS_FILTER_OPTIONS: { label: string; value: StatusFilter }[] = [
-  { label: "All", value: "all" },
-  { label: "Not Tracked", value: "all" }, // handled separately below
-  ...Object.entries(STATUS_META).map(([k, v]) => ({ label: v.label, value: k as JobStatus })),
-];
-
-// Note cell — isolated to avoid re-rendering the whole table on keystroke
-function NoteCell({ jobId, initial, onSave }: { jobId: string; initial: string; onSave: (v: string) => void }) {
+// Fix #6: NoteCell syncs local state when initial prop changes (e.g. note updated elsewhere)
+function NoteCell({
+  initial,
+  onSave,
+}: {
+  initial: string;
+  onSave: (v: string) => void;
+}) {
   const [val, setVal] = useState(initial);
+
+  useEffect(() => {
+    setVal(initial);
+  }, [initial]);
+
   return (
     <textarea
       value={val}
@@ -103,30 +120,34 @@ function NoteCell({ jobId, initial, onSave }: { jobId: string; initial: string; 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function LatestJobsPage() {
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [companyMap, setCompanyMap] = useState<CompanyMap>({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
+  const [jobs, setJobs]               = useState<Job[]>([]);
+  const [companyMap, setCompanyMap]   = useState<CompanyMap>({});
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState<string | null>(null);
+  const [exporting, setExporting]     = useState(false);
 
-  const [range, setRange] = useState<Range>(30);
-  const [search, setSearch] = useState("");
-  const [selectedDate, setSelectedDate] = useState<string>(todayISO());
-  const [statusFilter, setStatusFilter] = useState<StatusFilter | "not_tracked">("all");
+  const [range, setRange]                   = useState<Range>(30);
+  const [search, setSearch]                 = useState("");
+  // Fix #3: null = "show all dates in range" — no longer defaults to today
+  const [selectedDate, setSelectedDate]     = useState<string | null>(null);
+  const [statusFilter, setStatusFilter]     = useState<StatusFilter>("all");
   const [locationFilter, setLocationFilter] = useState("");
-  const [compact, setCompact] = useState(false);
+  const [compact, setCompact]               = useState(false);
 
-  const [companyAsc, setCompanyAsc] = useState(true);
-  const [postedAsc, setPostedAsc] = useState(false);
+  const [companyAsc, setCompanyAsc]     = useState(true);
+  const [postedAsc, setPostedAsc]       = useState(false);
   const [sortByPosted, setSortByPosted] = useState(true);
 
-  const [page, setPage] = useState(1);
+  const [page, setPage]         = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [openNoteId, setOpenNoteId] = useState<string | null>(null);
 
   const { statuses, setStatus, getStatus, getNote, setNote } = useJobTracker();
   const lastVisit = useLastVisit();
   const quote = useMemo(() => getDailyQuote(), []);
+
+  // Fix #8: compute range start so date nav cannot go before fetched window
+  const rangeStart = useMemo(() => addDays(todayISO(), -(range - 1)), [range]);
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
 
@@ -144,10 +165,17 @@ export default function LatestJobsPage() {
       .gte("posted_at", from.toISOString())
       .order("posted_at", { ascending: false });
 
-    if (jobsErr) { setError("Failed to load jobs. Please try again."); setLoading(false); return; }
+    if (jobsErr) {
+      setError("Failed to load jobs. Please try again.");
+      setLoading(false);
+      return;
+    }
 
     if (!jobsData || jobsData.length === 0) {
-      setJobs([]); setCompanyMap({}); setLoading(false); return;
+      setJobs([]);
+      setCompanyMap({});
+      setLoading(false);
+      return;
     }
 
     setJobs(jobsData as Job[]);
@@ -168,14 +196,17 @@ export default function LatestJobsPage() {
 
   useEffect(() => { fetchJobs(range); }, [range]);
 
-  // ── Export applied CSV ────────────────────────────────────────────────────
+  // ── Export CSV ────────────────────────────────────────────────────────────
 
   async function exportApplied() {
     const stored = localStorage.getItem("jobhunt_status");
     const statusMap: Record<string, string> = stored ? JSON.parse(stored) : {};
     const ids = Object.keys(statusMap);
 
-    if (ids.length === 0) { alert("No tracked jobs to export yet."); return; }
+    if (ids.length === 0) {
+      alert("No tracked jobs to export yet.");
+      return;
+    }
 
     setExporting(true);
 
@@ -184,7 +215,11 @@ export default function LatestJobsPage() {
       .select("id, title, posting_url, posted_at, job_id, locations, company_id")
       .in("id", ids);
 
-    if (!jobsData?.length) { setExporting(false); alert("Could not fetch job details."); return; }
+    if (!jobsData?.length) {
+      setExporting(false);
+      alert("Could not fetch job details.");
+      return;
+    }
 
     const companyIds = Array.from(new Set(jobsData.map(j => j.company_id)));
     const { data: companies } = await supabase.from("companies").select("id, name").in("id", companyIds);
@@ -220,7 +255,7 @@ export default function LatestJobsPage() {
     setExporting(false);
   }
 
-  // ── Location options from actual job data ─────────────────────────────────
+  // ── Derived data ──────────────────────────────────────────────────────────
 
   const locationOptions = useMemo(() => {
     const set = new Set<string>();
@@ -232,8 +267,6 @@ export default function LatestJobsPage() {
     return [...set].sort();
   }, [jobs]);
 
-  // ── Stats ─────────────────────────────────────────────────────────────────
-
   const stats = useMemo(() => {
     const today = todayISO();
     const todayCount = jobs.filter(j => toLocalDate(j.posted_at) === today).length;
@@ -241,8 +274,6 @@ export default function LatestJobsPage() {
     const trackedCount = jobs.filter(j => j.id in statuses).length;
     return { total: jobs.length, today: todayCount, companies: companiesCount, tracked: trackedCount };
   }, [jobs, statuses]);
-
-  // ── Filter + Sort ─────────────────────────────────────────────────────────
 
   const filteredJobs = useMemo(() => {
     let data = jobs;
@@ -257,6 +288,7 @@ export default function LatestJobsPage() {
       });
     }
 
+    // Fix #3: only apply date filter when a date is explicitly selected
     if (selectedDate) {
       data = data.filter(j => toLocalDate(j.posted_at) === selectedDate);
     }
@@ -288,9 +320,11 @@ export default function LatestJobsPage() {
     });
   }, [filteredJobs, companyMap, companyAsc, postedAsc, sortByPosted]);
 
-  const totalPages = Math.max(1, Math.ceil(sortedJobs.length / pageSize));
+  const totalPages  = Math.max(1, Math.ceil(sortedJobs.length / pageSize));
   const paginatedJobs = sortedJobs.slice((page - 1) * pageSize, page * pageSize);
-  const cellPad = compact ? "px-4 py-1.5" : "px-4 py-3";
+  const cellPad     = compact ? "px-4 py-1.5" : "px-4 py-3";
+
+  const hasActiveFilters = !!search || !!selectedDate || !!locationFilter || statusFilter !== "all";
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -317,10 +351,10 @@ export default function LatestJobsPage() {
         {!loading && !error && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
             {[
-              { label: "In Range", value: stats.total, color: "text-slate-800 dark:text-slate-100" },
-              { label: "Posted Today", value: stats.today, color: "text-blue-600 dark:text-blue-400" },
-              { label: "Companies", value: stats.companies, color: "text-slate-800 dark:text-slate-100" },
-              { label: "Tracked", value: stats.tracked, color: "text-purple-600 dark:text-purple-400" },
+              { label: "In Range",     value: stats.total,    color: "text-slate-800 dark:text-slate-100" },
+              { label: "Posted Today", value: stats.today,    color: "text-blue-600 dark:text-blue-400" },
+              { label: "Companies",    value: stats.companies, color: "text-slate-800 dark:text-slate-100" },
+              { label: "Tracked",      value: stats.tracked,  color: "text-purple-600 dark:text-purple-400" },
             ].map(s => (
               <div key={s.label} className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-5 py-4 shadow-sm">
                 <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">{s.label}</p>
@@ -334,7 +368,8 @@ export default function LatestJobsPage() {
         <div className="flex flex-wrap items-center gap-3 mb-3">
           <div className="flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-1">
             {RANGE_OPTIONS.map(opt => (
-              <button key={opt.value} onClick={() => { setRange(opt.value); setPage(1); }}
+              <button key={opt.value}
+                onClick={() => { setRange(opt.value); setSelectedDate(null); setPage(1); }}
                 className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
                   range === opt.value
                     ? "bg-blue-600 text-white"
@@ -352,6 +387,7 @@ export default function LatestJobsPage() {
             className="flex-1 min-w-60 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:focus:ring-blue-800"
           />
 
+          {/* Density toggle */}
           <div className="flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-1">
             <button onClick={() => setCompact(false)} title="Comfortable"
               className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${!compact ? "bg-slate-700 dark:bg-slate-500 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
@@ -362,30 +398,47 @@ export default function LatestJobsPage() {
           </div>
         </div>
 
-        {/* Controls Row 2: Date + Status filter + Location + Rows */}
+        {/* Controls Row 2: Date nav + Status filter + Location + Rows */}
         <div className="flex flex-wrap items-center gap-3 mb-4">
+
+          {/* Fix #3 + #8: date picker with clear button, arrows clamped to range */}
           <div className="flex items-center gap-1">
-            <button onClick={() => { setSelectedDate(addDays(selectedDate, -1)); setPage(1); }}
-              className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
+            <button
+              onClick={() => { if (selectedDate) { setSelectedDate(addDays(selectedDate, -1)); setPage(1); } }}
+              disabled={!selectedDate || selectedDate <= rangeStart}
+              className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40"
             >←</button>
-            <input type="date" value={selectedDate} max={todayISO()}
-              onChange={e => { setSelectedDate(e.target.value); setPage(1); }}
+            <input
+              type="date"
+              value={selectedDate ?? ""}
+              min={rangeStart}
+              max={todayISO()}
+              onChange={e => { setSelectedDate(e.target.value || null); setPage(1); }}
               className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-100 focus:outline-none"
             />
-            <button disabled={selectedDate >= todayISO()}
-              onClick={() => { setSelectedDate(addDays(selectedDate, 1)); setPage(1); }}
+            <button
+              onClick={() => { if (selectedDate) { setSelectedDate(addDays(selectedDate, 1)); setPage(1); } }}
+              disabled={!selectedDate || selectedDate >= todayISO()}
               className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40"
             >→</button>
+            {selectedDate && (
+              <button
+                onClick={() => { setSelectedDate(null); setPage(1); }}
+                title="Show all dates"
+                className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
+              >✕</button>
+            )}
           </div>
 
           {/* Status filter */}
           <div className="flex flex-wrap items-center gap-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-1">
-            {[
-              { label: "All", value: "all" as const },
-              { label: "Not Tracked", value: "not_tracked" as const },
-              ...Object.entries(STATUS_META).map(([k, v]) => ({ label: v.label, value: k as JobStatus })),
-            ].map(opt => (
-              <button key={opt.value} onClick={() => { setStatusFilter(opt.value as any); setPage(1); }}
+            {([
+              { label: "All",         value: "all"         },
+              { label: "Not Tracked", value: "not_tracked" },
+              ...Object.entries(STATUS_META).map(([k, v]) => ({ label: v.label, value: k })),
+            ] as { label: string; value: StatusFilter }[]).map(opt => (
+              <button key={opt.value}
+                onClick={() => { setStatusFilter(opt.value); setPage(1); }}
                 className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
                   statusFilter === opt.value
                     ? "bg-blue-600 text-white"
@@ -395,9 +448,11 @@ export default function LatestJobsPage() {
             ))}
           </div>
 
-          {/* Location filter */}
+          {/* Location filter — only shown when there are locations to choose from */}
           {locationOptions.length > 0 && (
-            <select value={locationFilter} onChange={e => { setLocationFilter(e.target.value); setPage(1); }}
+            <select
+              value={locationFilter}
+              onChange={e => { setLocationFilter(e.target.value); setPage(1); }}
               className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200 focus:outline-none"
             >
               <option value="">All Locations</option>
@@ -408,7 +463,9 @@ export default function LatestJobsPage() {
           <div className="ml-auto flex items-center gap-3 text-sm text-slate-600 dark:text-slate-400">
             <div className="flex items-center gap-2">
               <span>Rows</span>
-              <select value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
+              <select
+                value={pageSize}
+                onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
                 className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1 text-sm text-slate-700 dark:text-slate-200"
               >
                 {[10, 20, 30, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
@@ -424,17 +481,28 @@ export default function LatestJobsPage() {
             Loading jobs...
           </div>
         )}
+
         {!loading && error && (
           <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-10 text-center shadow-sm">
             <p className="text-red-600 dark:text-red-400 mb-3">{error}</p>
-            <button onClick={() => fetchJobs()}
+            <button
+              onClick={() => fetchJobs()}
               className="rounded-md border border-red-300 dark:border-red-700 px-4 py-1.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40"
             >Retry</button>
           </div>
         )}
+
         {!loading && !error && sortedJobs.length === 0 && (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-16 text-center text-slate-500 dark:text-slate-400 shadow-sm">
-            {search ? "No jobs match your search." : `No jobs found for ${selectedDate}.`}
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-16 text-center shadow-sm">
+            <p className="text-slate-500 dark:text-slate-400 mb-2">
+              {hasActiveFilters ? "No jobs match your filters." : "No jobs found in this range."}
+            </p>
+            {hasActiveFilters && (
+              <button
+                onClick={() => { setSearch(""); setSelectedDate(null); setLocationFilter(""); setStatusFilter("all"); setPage(1); }}
+                className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+              >Clear all filters</button>
+            )}
           </div>
         )}
 
@@ -463,12 +531,13 @@ export default function LatestJobsPage() {
                 </tr>
               </thead>
               <tbody>
+                {/* Fix #1: React.Fragment with key instead of <> so React can track rows correctly */}
                 {paginatedJobs.map(job => {
-                  const status = getStatus(job.id);
+                  const status    = getStatus(job.id);
                   const statusMeta = status ? STATUS_META[status] : null;
-                  const isNew = lastVisit !== null && new Date(job.first_seen_at) > lastVisit;
-                  const hasNote = !!getNote(job.id);
-                  const noteOpen = openNoteId === job.id;
+                  const isNew     = lastVisit !== null && new Date(job.first_seen_at) > lastVisit;
+                  const hasNote   = !!getNote(job.id);
+                  const noteOpen  = openNoteId === job.id;
 
                   const rowBg = status === "rejected"
                     ? "bg-slate-50 dark:bg-slate-800/50 opacity-70"
@@ -477,8 +546,8 @@ export default function LatestJobsPage() {
                     : "hover:bg-slate-50 dark:hover:bg-slate-700/40";
 
                   return (
-                    <>
-                      <tr key={job.id} className={`border-b border-slate-100 dark:border-slate-700 transition-colors ${rowBg}`}>
+                    <React.Fragment key={job.id}>
+                      <tr className={`border-b border-slate-100 dark:border-slate-700 transition-colors ${rowBg}`}>
                         <td className={`${cellPad} whitespace-nowrap`}>
                           <div className="flex items-center gap-2">
                             {isNew && (
@@ -492,7 +561,9 @@ export default function LatestJobsPage() {
                         <td className={`${cellPad} font-medium text-slate-800 dark:text-slate-100`}>{job.title}</td>
                         <td className={`${cellPad} text-slate-500 dark:text-slate-400`}>{job.job_id ?? "-"}</td>
                         <td className={`${cellPad} text-slate-600 dark:text-slate-300`}>{fmtLocation(job.locations)}</td>
-                        <td className={`${cellPad} whitespace-nowrap ${freshnessClass(job.posted_at)}`}>{fmtDateTime(job.posted_at)}</td>
+                        <td className={`${cellPad} whitespace-nowrap ${freshnessClass(job.posted_at)}`}>
+                          {fmtDateTime(job.posted_at)}
+                        </td>
                         <td className={`${cellPad}`}>
                           <select
                             value={status ?? ""}
@@ -523,20 +594,26 @@ export default function LatestJobsPage() {
                           </button>
                         </td>
                         <td className={`${cellPad}`}>
-                          <a href={job.posting_url} target="_blank" rel="noopener noreferrer"
+                          <a
+                            href={job.posting_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
                             className="text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
                           >View ↗</a>
                         </td>
                       </tr>
 
                       {noteOpen && (
-                        <tr key={`${job.id}-note`} className="border-b border-slate-100 dark:border-slate-700">
+                        <tr className="border-b border-slate-100 dark:border-slate-700">
                           <td colSpan={8} className="px-4 pb-3 pt-1 bg-yellow-50/50 dark:bg-yellow-900/10">
-                            <NoteCell jobId={job.id} initial={getNote(job.id)} onSave={v => setNote(job.id, v)} />
+                            <NoteCell
+                              initial={getNote(job.id)}
+                              onSave={v => setNote(job.id, v)}
+                            />
                           </td>
                         </tr>
                       )}
-                    </>
+                    </React.Fragment>
                   );
                 })}
               </tbody>

@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 export type JobStatus = "applied" | "screening" | "interview" | "offer" | "rejected";
 
 export const STATUS_META: Record<JobStatus, { label: string; light: string; dark: string }> = {
-  applied:   { label: "Applied",   light: "bg-blue-100 text-blue-700 border-blue-300",   dark: "dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-700" },
+  applied:   { label: "Applied",   light: "bg-blue-100 text-blue-700 border-blue-300",    dark: "dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-700" },
   screening: { label: "Screening", light: "bg-amber-100 text-amber-700 border-amber-300", dark: "dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700" },
   interview: { label: "Interview", light: "bg-purple-100 text-purple-700 border-purple-300", dark: "dark:bg-purple-900/40 dark:text-purple-300 dark:border-purple-700" },
   offer:     { label: "Offer",     light: "bg-green-100 text-green-700 border-green-300",  dark: "dark:bg-green-900/40 dark:text-green-300 dark:border-green-700" },
@@ -11,7 +11,7 @@ export const STATUS_META: Record<JobStatus, { label: string; light: string; dark
 };
 
 const STATUS_KEY = "jobhunt_status";
-const NOTES_KEY = "jobhunt_notes";
+const NOTES_KEY  = "jobhunt_notes";
 const LEGACY_KEY = "jobhunt_applied";
 
 function read<T>(key: string, fallback: T): T {
@@ -28,20 +28,24 @@ function write(key: string, value: unknown) {
 }
 
 export function useJobTracker() {
-  const [statuses, setStatuses] = useState<Record<string, JobStatus>>({});
-  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [statuses, setStatuses]       = useState<Record<string, JobStatus>>({});
+  const [notes, setNotes]             = useState<Record<string, string>>({});
+  const [initialized, setInitialized] = useState(false); // true once localStorage has been read
 
   useEffect(() => {
     const stored = read<Record<string, JobStatus>>(STATUS_KEY, {});
-    // one-time migration from old binary applied set
+
+    // one-time migration from legacy binary applied set
     const legacy = read<string[]>(LEGACY_KEY, []);
     if (legacy.length > 0) {
       legacy.forEach(id => { if (!stored[id]) stored[id] = "applied"; });
       write(STATUS_KEY, stored);
       localStorage.removeItem(LEGACY_KEY);
     }
+
     setStatuses(stored);
     setNotes(read(NOTES_KEY, {}));
+    setInitialized(true);
   }, []);
 
   const setStatus = useCallback((id: string, status: JobStatus | null) => {
@@ -68,5 +72,5 @@ export function useJobTracker() {
   const getNote   = useCallback((id: string): string => notes[id] ?? "", [notes]);
   const isTracked = useCallback((id: string) => id in statuses, [statuses]);
 
-  return { statuses, notes, setStatus, setNote, getStatus, getNote, isTracked };
+  return { statuses, notes, initialized, setStatus, setNote, getStatus, getNote, isTracked };
 }

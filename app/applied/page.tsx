@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { useJobTracker, STATUS_META, type JobStatus } from "@/lib/useJobTracker";
@@ -28,10 +28,20 @@ function fmt(v: string | null) {
   return new Date(v).toLocaleDateString();
 }
 
-// Isolated note cell to avoid full re-render on keystroke
-function NoteCell({ jobId, initial, onSave }: { jobId: string; initial: string; onSave: (v: string) => void }) {
+// Fix #6 (applied page variant): syncs local state when saved note changes externally
+function NoteCell({
+  initial,
+  onSave,
+}: {
+  initial: string;
+  onSave: (v: string) => void;
+}) {
   const [val, setVal] = useState(initial);
-  useEffect(() => { setVal(initial); }, [initial]);
+
+  useEffect(() => {
+    setVal(initial);
+  }, [initial]);
+
   return (
     <textarea
       value={val}
@@ -44,30 +54,38 @@ function NoteCell({ jobId, initial, onSave }: { jobId: string; initial: string; 
   );
 }
 
-const STATUS_ORDER: (JobStatus | "all")[] = ["all", "applied", "screening", "interview", "offer", "rejected"];
+const STATUS_ORDER: (JobStatus | "all")[] = [
+  "all", "applied", "screening", "interview", "offer", "rejected",
+];
 
 export default function AppliedPage() {
-  const [jobs, setJobs] = useState<TrackedJob[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [jobs, setJobs]         = useState<TrackedJob[]>([]);
+  const [fetching, setFetching] = useState(false); // true only while Supabase is loading
+  const [error, setError]       = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
-  const [search, setSearch] = useState("");
+  const [search, setSearch]     = useState("");
   const [openNoteId, setOpenNoteId] = useState<string | null>(null);
-  const [sortAsc, setSortAsc] = useState(false);
+  const [sortAsc, setSortAsc]   = useState(false);
 
-  const { statuses, notes, setStatus, setNote, getNote } = useJobTracker();
+  // Fix #2: initialized tells us localStorage has been read — prevents flash of empty state
+  const { statuses, notes, initialized, setStatus, setNote, getNote } = useJobTracker();
 
-  // Reload tracked jobs whenever statuses change (new additions)
   const trackedIds = useMemo(() => Object.keys(statuses), [statuses]);
 
+  // Fix #9: depend on `initialized` + stable string of IDs — no .join anti-pattern on raw array
+  const trackedIdsKey = trackedIds.slice().sort().join(",");
+
   useEffect(() => {
+    // Fix #2: wait until localStorage is loaded before deciding what to show
+    if (!initialized) return;
+
     if (trackedIds.length === 0) {
       setJobs([]);
-      setLoading(false);
+      setFetching(false);
       return;
     }
 
-    setLoading(true);
+    setFetching(true);
     setError(null);
 
     supabase
@@ -75,8 +93,16 @@ export default function AppliedPage() {
       .select("id, title, posting_url, posted_at, job_id, locations, company_id")
       .in("id", trackedIds)
       .then(async ({ data, error: err }) => {
-        if (err) { setError("Failed to load tracked jobs."); setLoading(false); return; }
-        if (!data?.length) { setJobs([]); setLoading(false); return; }
+        if (err) {
+          setError("Failed to load tracked jobs.");
+          setFetching(false);
+          return;
+        }
+        if (!data?.length) {
+          setJobs([]);
+          setFetching(false);
+          return;
+        }
 
         const companyIds = Array.from(new Set(data.map(j => j.company_id)));
         const { data: companies } = await supabase
@@ -86,11 +112,11 @@ export default function AppliedPage() {
         companies?.forEach(c => (cMap[c.id] = c.name));
 
         setJobs(data.map(j => ({ ...j, company_name: cMap[j.company_id] ?? "Unknown" })));
-        setLoading(false);
+        setFetching(false);
       });
-  }, [trackedIds.join(",")]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialized, trackedIdsKey]);
 
-  // Pipeline counts
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: jobs.length };
     jobs.forEach(j => {
@@ -128,6 +154,9 @@ export default function AppliedPage() {
     setStatus(id, null);
   }
 
+  // Fix #2: show spinner until localStorage is read (initialized) AND Supabase fetch is done
+  const isLoading = !initialized || fetching;
+
   return (
     <main className="min-h-screen bg-slate-50 dark:bg-slate-900 p-6 transition-colors">
       <div className="max-w-7xl mx-auto">
@@ -139,10 +168,10 @@ export default function AppliedPage() {
         </div>
 
         {/* Pipeline summary cards */}
-        {!loading && !error && (
+        {initialized && !error && (
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-6">
             {STATUS_ORDER.map(s => {
-              const meta = s === "all" ? null : STATUS_META[s];
+              const meta  = s === "all" ? null : STATUS_META[s];
               const count = counts[s] ?? 0;
               return (
                 <button
@@ -154,12 +183,14 @@ export default function AppliedPage() {
                       : "border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600"
                   } bg-white dark:bg-slate-800`}
                 >
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mb-1 capitalize">{s === "all" ? "Total" : meta?.label}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mb-1 capitalize">
+                    {s === "all" ? "Total" : meta?.label}
+                  </p>
                   <p className={`text-xl font-semibold ${
-                    s === "offer" ? "text-green-600 dark:text-green-400"
+                    s === "offer"     ? "text-green-600 dark:text-green-400"
                     : s === "interview" ? "text-purple-600 dark:text-purple-400"
                     : s === "screening" ? "text-amber-600 dark:text-amber-400"
-                    : s === "rejected" ? "text-slate-400 dark:text-slate-500"
+                    : s === "rejected"  ? "text-slate-400 dark:text-slate-500"
                     : "text-slate-800 dark:text-slate-100"
                   }`}>{count}</p>
                 </button>
@@ -183,35 +214,40 @@ export default function AppliedPage() {
         </div>
 
         {/* States */}
-        {loading && (
+        {isLoading && (
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-16 text-center text-slate-500 dark:text-slate-400 shadow-sm">
-            Loading tracked jobs...
+            Loading...
           </div>
         )}
 
-        {!loading && error && (
+        {!isLoading && error && (
           <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-10 text-center text-red-600 dark:text-red-400 shadow-sm">
             {error}
           </div>
         )}
 
-        {!loading && !error && trackedIds.length === 0 && (
+        {/* Fix #2: only show "no tracked jobs" once we know localStorage is loaded */}
+        {!isLoading && !error && trackedIds.length === 0 && (
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-16 text-center shadow-sm">
             <p className="text-slate-500 dark:text-slate-400 mb-3">No applications tracked yet.</p>
             <p className="text-slate-400 dark:text-slate-500 text-sm">
-              Go to <Link href="/latest" className="text-blue-600 dark:text-blue-400 hover:underline">Latest Jobs</Link> and set a status on any job to start tracking.
+              Go to{" "}
+              <Link href="/latest" className="text-blue-600 dark:text-blue-400 hover:underline">
+                Latest Jobs
+              </Link>{" "}
+              and set a status on any job to start tracking.
             </p>
           </div>
         )}
 
-        {!loading && !error && trackedIds.length > 0 && filteredJobs.length === 0 && (
+        {!isLoading && !error && trackedIds.length > 0 && filteredJobs.length === 0 && (
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-12 text-center text-slate-500 dark:text-slate-400 shadow-sm">
             No jobs match your filter.
           </div>
         )}
 
         {/* Table */}
-        {!loading && !error && filteredJobs.length > 0 && (
+        {!isLoading && !error && filteredJobs.length > 0 && (
           <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm">
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 sticky top-0 z-10">
@@ -232,22 +268,25 @@ export default function AppliedPage() {
                 </tr>
               </thead>
               <tbody>
+                {/* Fix #1: React.Fragment with key instead of <> */}
                 {filteredJobs.map(job => {
-                  const status = statuses[job.id] as JobStatus | undefined;
-                  const meta = status ? STATUS_META[status] : null;
+                  const status   = statuses[job.id] as JobStatus | undefined;
+                  const meta     = status ? STATUS_META[status] : null;
                   const noteOpen = openNoteId === job.id;
-                  const hasNote = !!notes[job.id];
+                  const hasNote  = !!notes[job.id];
 
                   return (
-                    <>
-                      <tr
-                        key={job.id}
-                        className={`border-b border-slate-100 dark:border-slate-700 transition-colors ${
-                          status === "rejected" ? "opacity-60 dark:opacity-50" : "hover:bg-slate-50 dark:hover:bg-slate-700/40"
-                        }`}
-                      >
+                    <React.Fragment key={job.id}>
+                      <tr className={`border-b border-slate-100 dark:border-slate-700 transition-colors ${
+                        status === "rejected"
+                          ? "opacity-60 dark:opacity-50"
+                          : "hover:bg-slate-50 dark:hover:bg-slate-700/40"
+                      }`}>
                         <td className="px-4 py-3 whitespace-nowrap">
-                          <Link href={`/companies/${job.company_id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
+                          <Link
+                            href={`/companies/${job.company_id}`}
+                            className="text-blue-600 dark:text-blue-400 hover:underline"
+                          >
                             {job.company_name}
                           </Link>
                         </td>
@@ -257,7 +296,9 @@ export default function AppliedPage() {
                             value={status ?? ""}
                             onChange={e => setStatus(job.id, (e.target.value || null) as JobStatus | null)}
                             className={`rounded-md border px-2 py-1 text-xs font-medium cursor-pointer focus:outline-none ${
-                              meta ? `${meta.light} ${meta.dark}` : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-500 dark:text-slate-400"
+                              meta
+                                ? `${meta.light} ${meta.dark}`
+                                : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-500 dark:text-slate-400"
                             }`}
                           >
                             <option value="">Not Tracked</option>
@@ -269,7 +310,10 @@ export default function AppliedPage() {
                         <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmtLocation(job.locations)}</td>
                         <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{fmt(job.posted_at)}</td>
                         <td className="px-4 py-3">
-                          <a href={job.posting_url} target="_blank" rel="noreferrer"
+                          <a
+                            href={job.posting_url}
+                            target="_blank"
+                            rel="noreferrer"
                             className="text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
                           >Open ↗</a>
                         </td>
@@ -296,13 +340,16 @@ export default function AppliedPage() {
                       </tr>
 
                       {noteOpen && (
-                        <tr key={`${job.id}-note`} className="border-b border-slate-100 dark:border-slate-700">
+                        <tr className="border-b border-slate-100 dark:border-slate-700">
                           <td colSpan={8} className="px-4 pb-3 pt-1 bg-yellow-50/50 dark:bg-yellow-900/10">
-                            <NoteCell jobId={job.id} initial={getNote(job.id)} onSave={v => setNote(job.id, v)} />
+                            <NoteCell
+                              initial={getNote(job.id)}
+                              onSave={v => setNote(job.id, v)}
+                            />
                           </td>
                         </tr>
                       )}
-                    </>
+                    </React.Fragment>
                   );
                 })}
               </tbody>
