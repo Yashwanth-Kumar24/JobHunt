@@ -21,17 +21,10 @@ export default function CompaniesPage() {
       setLoading(true);
       setError(null);
 
-      const [{ data: companiesData, error: cErr }, { data: countsData, error: jErr }] =
-        await Promise.all([
-          supabase.from("companies").select("id, name").order("name"),
-          supabase
-            .from("jobs")
-            .select("company_id")
-            .gte("posted_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
-            .limit(10000),
-        ]);
+      const { data: companiesData, error: cErr } = await supabase
+        .from("companies").select("id, name").order("name");
 
-      if (cErr || jErr) {
+      if (cErr) {
         setError("Failed to load companies. Please try again.");
         setLoading(false);
         return;
@@ -39,9 +32,26 @@ export default function CompaniesPage() {
 
       if (companiesData) setCompanies(companiesData);
 
-      if (countsData) {
+      // Paginate job counts — PostgREST server cap is often 1000
+      const fromISO = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const allJobRows: { company_id: string }[] = [];
+      const BATCH = 1000;
+      let offset = 0;
+      while (true) {
+        const { data: batch, error: jErr } = await supabase
+          .from("jobs")
+          .select("company_id")
+          .gte("posted_at", fromISO)
+          .range(offset, offset + BATCH - 1);
+        if (jErr) break;
+        if (batch && batch.length > 0) allJobRows.push(...batch);
+        if (!batch || batch.length < BATCH) break;
+        offset += BATCH;
+      }
+
+      if (allJobRows.length > 0) {
         const counts: Record<string, number> = {};
-        countsData.forEach(j => { counts[j.company_id] = (counts[j.company_id] ?? 0) + 1; });
+        allJobRows.forEach(j => { counts[j.company_id] = (counts[j.company_id] ?? 0) + 1; });
         setJobCounts(counts);
       }
 

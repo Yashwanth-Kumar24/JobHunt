@@ -6,10 +6,16 @@ import { supabase } from "@/lib/supabase";
 import { useJobTracker, STATUS_META, type JobStatus } from "@/lib/useJobTracker";
 import { useLastVisit } from "@/lib/useLastVisit";
 
-type Job = {
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Lightweight record fetched for ALL jobs in the range.
+ * Used for: day strip counts, stats bar, search/filter/sort index.
+ * Does NOT include posting_url — that's fetched per-page on demand.
+ */
+type JobMeta = {
   id: string;
   title: string;
-  posting_url: string;
   posted_at: string;
   first_seen_at: string;
   job_id: string | null;
@@ -40,23 +46,15 @@ function addDays(dateStr: string, days: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-/** "Jun 10" — or "Today" for today's date */
 function pillLabel(dateStr: string): string {
   if (dateStr === todayISO()) return "Today";
   const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** "Jun 10" for stats card heading */
 function shortDate(dateStr: string): string {
   const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function fmtLocation(loc: any): string {
@@ -68,19 +66,13 @@ function fmtLocation(loc: any): string {
 
 function fmtDateTime(value: string): string {
   return new Date(value).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   });
 }
 
-/** Compare calendar days locally — avoids UTC timezone drift making a job look "today" when it's not */
 function daysSince(value: string): number {
-  const postedLocal = toLocalDate(value);
-  const today       = todayISO();
-  const [py, pm, pd] = postedLocal.split("-").map(Number);
-  const [ty, tm, td] = today.split("-").map(Number);
+  const [py, pm, pd] = toLocalDate(value).split("-").map(Number);
+  const [ty, tm, td] = todayISO().split("-").map(Number);
   return Math.round(
     (new Date(ty, tm - 1, td).getTime() - new Date(py, pm - 1, pd).getTime()) / 86_400_000
   );
@@ -107,9 +99,6 @@ const QUOTES = [
   "The next application could be the one.",
   "Hard days build the strongest stories.",
 ];
-function randomQuote(): string {
-  return QUOTES[Math.floor(Math.random() * QUOTES.length)];
-}
 
 const RANGE_OPTIONS: { label: string; value: Range }[] = [
   { label: "Today",   value: 1  },
@@ -118,7 +107,6 @@ const RANGE_OPTIONS: { label: string; value: Range }[] = [
   { label: "30 Days", value: 30 },
 ];
 
-// NoteCell isolated so parent doesn't re-render on every keystroke
 function NoteCell({ initial, onSave }: { initial: string; onSave: (v: string) => void }) {
   const [val, setVal] = useState(initial);
   useEffect(() => { setVal(initial); }, [initial]);
@@ -137,14 +125,21 @@ function NoteCell({ initial, onSave }: { initial: string; onSave: (v: string) =>
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function LatestJobsPage() {
-  const [jobs, setJobs]             = useState<Job[]>([]);
+  // ── Phase 1: metadata (lightweight, all records in range) ─────────────────
+  const [jobsMeta, setJobsMeta]     = useState<JobMeta[]>([]);
   const [companyMap, setCompanyMap] = useState<CompanyMap>({});
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState<string | null>(null);
-  const [exporting, setExporting]   = useState(false);
+  const [metaLoading, setMetaLoading] = useState(true);
+  const [metaError, setMetaError]     = useState<string | null>(null);
 
+  // ── Phase 2: posting_url per page (fetched on page/filter change) ─────────
+  const [pageUrls, setPageUrls]       = useState<Record<string, string>>({});
+  const [urlsLoading, setUrlsLoading] = useState(false);
+
+  const [exporting, setExporting] = useState(false);
+
+  // ── Filters / UI state ────────────────────────────────────────────────────
   const [range, setRange]                   = useState<Range>(7);
-  const [selectedDate, setSelectedDate]     = useState<string | null>(null); // null = All
+  const [selectedDate, setSelectedDate]     = useState<string | null>(null);
   const [search, setSearch]                 = useState("");
   const [statusFilter, setStatusFilter]     = useState<StatusFilter>("all");
   const [locationFilter, setLocationFilter] = useState("");
@@ -154,128 +149,101 @@ export default function LatestJobsPage() {
   const [postedAsc, setPostedAsc]       = useState(false);
   const [sortByPosted, setSortByPosted] = useState(true);
 
-  const [page, setPage]             = useState(1);
-  const [pageSize, setPageSize]     = useState(20);
+  const [page, setPage]         = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [openNoteId, setOpenNoteId] = useState<string | null>(null);
 
   const { statuses, setStatus, getStatus, getNote, setNote } = useJobTracker();
   const lastVisit = useLastVisit();
-  const [quote] = useState(() => randomQuote());
+  const [quote] = useState(() => QUOTES[Math.floor(Math.random() * QUOTES.length)]);
 
-  // ── Fetch ─────────────────────────────────────────────────────────────────
+  // ── Phase 1: fetch all metadata for the range ─────────────────────────────
 
-  async function fetchJobs(r: Range = range) {
-    setLoading(true);
-    setError(null);
+  async function fetchMeta(r: Range) {
+    setMetaLoading(true);
+    setMetaError(null);
+    setPageUrls({});
 
     const from = new Date();
     from.setDate(from.getDate() - (r - 1));
     from.setHours(0, 0, 0, 0);
+    const fromISO = from.toISOString();
 
-    const { data: jobsData, error: jobsErr } = await supabase
-      .from("jobs")
-      .select("id, title, posting_url, posted_at, first_seen_at, job_id, locations, company_id")
-      .gte("posted_at", from.toISOString())
-      .order("posted_at", { ascending: false })
-      .limit(10000);
+    const allMeta: JobMeta[] = [];
+    const BATCH = 1000;
+    let offset = 0;
 
-    if (jobsErr) {
-      setError("Failed to load jobs. Please try again.");
-      setLoading(false);
-      return;
+    while (true) {
+      const { data, error } = await supabase
+        .from("jobs")
+        .select("id, title, posted_at, first_seen_at, job_id, locations, company_id")
+        .gte("posted_at", fromISO)
+        .order("posted_at", { ascending: false })
+        .range(offset, offset + BATCH - 1);
+
+      if (error) {
+        setMetaError("Failed to load jobs. Please try again.");
+        setMetaLoading(false);
+        return;
+      }
+
+      if (data?.length) allMeta.push(...(data as JobMeta[]));
+      if (!data || data.length < BATCH) break;
+      offset += BATCH;
     }
 
-    if (!jobsData || jobsData.length === 0) {
-      setJobs([]);
+    setJobsMeta(allMeta);
+
+    if (allMeta.length > 0) {
+      const companyIds = Array.from(new Set(allMeta.map(j => j.company_id)));
+      const { data: companies } = await supabase
+        .from("companies").select("id, name").in("id", companyIds);
+      if (companies) {
+        const map: CompanyMap = {};
+        companies.forEach(c => (map[c.id] = c.name));
+        setCompanyMap(map);
+      }
+    } else {
       setCompanyMap({});
-      setLoading(false);
-      return;
     }
 
-    setJobs(jobsData as Job[]);
-
-    const companyIds = Array.from(new Set(jobsData.map(j => j.company_id)));
-    const { data: companies } = await supabase
-      .from("companies").select("id, name").in("id", companyIds);
-
-    if (companies) {
-      const map: CompanyMap = {};
-      companies.forEach(c => (map[c.id] = c.name));
-      setCompanyMap(map);
-    }
-
-    setPage(1);
-    setLoading(false);
+    setMetaLoading(false);
   }
 
   useEffect(() => {
-    setSelectedDate(null); // clear day selection when range changes
-    fetchJobs(range);
+    setSelectedDate(null);
+    setPage(1);
+    fetchMeta(range);
   }, [range]);
 
-  // ── Export CSV ────────────────────────────────────────────────────────────
+  // ── Phase 2: fetch posting_url for the current page slice ─────────────────
 
-  async function exportApplied() {
-    const stored = localStorage.getItem("jobhunt_status");
-    const statusMap: Record<string, string> = stored ? JSON.parse(stored) : {};
-    const ids = Object.keys(statusMap);
-    if (ids.length === 0) { alert("No tracked jobs to export yet."); return; }
-
-    setExporting(true);
-    const { data: jobsData } = await supabase
+  async function fetchPageUrls(ids: string[]) {
+    if (!ids.length) { setPageUrls({}); return; }
+    setUrlsLoading(true);
+    const { data } = await supabase
       .from("jobs")
-      .select("id, title, posting_url, posted_at, job_id, locations, company_id")
+      .select("id, posting_url")
       .in("id", ids);
-
-    if (!jobsData?.length) { setExporting(false); alert("Could not fetch job details."); return; }
-
-    const companyIds = Array.from(new Set(jobsData.map(j => j.company_id)));
-    const { data: companies } = await supabase.from("companies").select("id, name").in("id", companyIds);
-    const cMap: Record<string, string> = {};
-    companies?.forEach(c => (cMap[c.id] = c.name));
-
-    const notesRaw = localStorage.getItem("jobhunt_notes");
-    const notesMap: Record<string, string> = notesRaw ? JSON.parse(notesRaw) : {};
-
-    const headers = ["Company", "Title", "Job ID", "Status", "Location", "Posted Date", "Job URL", "Notes"];
-    const rows = jobsData.map(j => [
-      cMap[j.company_id] ?? "",
-      j.title,
-      j.job_id ?? "",
-      STATUS_META[statusMap[j.id] as JobStatus]?.label ?? statusMap[j.id] ?? "",
-      fmtLocation(j.locations),
-      j.posted_at ? new Date(j.posted_at).toLocaleDateString() : "",
-      j.posting_url,
-      notesMap[j.id] ?? "",
-    ]);
-
-    const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
-    const csv = [headers, ...rows].map(r => r.map(c => esc(String(c))).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `job-tracker-${todayISO()}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    setExporting(false);
+    if (data) {
+      const map: Record<string, string> = {};
+      data.forEach((j: { id: string; posting_url: string }) => { map[j.id] = j.posting_url; });
+      setPageUrls(map);
+    }
+    setUrlsLoading(false);
   }
 
-  // ── Day strip data ────────────────────────────────────────────────────────
+  // ── Day strip ─────────────────────────────────────────────────────────────
 
-  /** Count of jobs per local date across the full fetched window */
   const dayCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    jobs.forEach(j => {
+    jobsMeta.forEach(j => {
       const d = toLocalDate(j.posted_at);
       counts[d] = (counts[d] ?? 0) + 1;
     });
     return counts;
-  }, [jobs]);
+  }, [jobsMeta]);
 
-  /** Ordered pills: oldest → newest, one per day in the range */
   const dayPills = useMemo(() => {
     const pills: { date: string; count: number }[] = [];
     for (let i = range - 1; i >= 0; i--) {
@@ -285,28 +253,24 @@ export default function LatestJobsPage() {
     return pills;
   }, [range, dayCounts]);
 
-  /** Today's total from the full unfiltered window — fixed reference point */
-  const todayTotal = useMemo(
-    () => dayCounts[todayISO()] ?? 0,
-    [dayCounts]
-  );
+  const todayTotal = useMemo(() => dayCounts[todayISO()] ?? 0, [dayCounts]);
 
-  // ── Location options ──────────────────────────────────────────────────────
+  // ── Location options (from full metadata) ─────────────────────────────────
 
   const locationOptions = useMemo(() => {
     const set = new Set<string>();
-    jobs.forEach(j => {
+    jobsMeta.forEach(j => {
       if (!j.locations) return;
       const locs = Array.isArray(j.locations) ? j.locations : [j.locations];
       locs.forEach(l => typeof l === "string" && l.trim() && set.add(l.trim()));
     });
     return [...set].sort();
-  }, [jobs]);
+  }, [jobsMeta]);
 
-  // ── Filter + Sort ─────────────────────────────────────────────────────────
+  // ── Filter → sorted metadata ──────────────────────────────────────────────
 
-  const filteredJobs = useMemo(() => {
-    let data = jobs;
+  const filteredMeta = useMemo(() => {
+    let data = jobsMeta;
 
     if (selectedDate) {
       data = data.filter(j => toLocalDate(j.posted_at) === selectedDate);
@@ -333,17 +297,10 @@ export default function LatestJobsPage() {
     }
 
     return data;
-  }, [jobs, companyMap, selectedDate, search, locationFilter, statusFilter, statuses]);
+  }, [jobsMeta, companyMap, selectedDate, search, locationFilter, statusFilter, statuses]);
 
-  /** Stats derived from filteredJobs — update whenever the day strip / filters change */
-  const stats = useMemo(() => ({
-    showing:   filteredJobs.length,
-    companies: new Set(filteredJobs.map(j => j.company_id)).size,
-    tracked:   filteredJobs.filter(j => j.id in statuses).length,
-  }), [filteredJobs, statuses]);
-
-  const sortedJobs = useMemo(() => {
-    const data = [...filteredJobs];
+  const sortedMeta = useMemo(() => {
+    const data = [...filteredMeta];
     if (sortByPosted) {
       return data.sort((a, b) => {
         const da = new Date(a.posted_at).getTime(), db = new Date(b.posted_at).getTime();
@@ -354,12 +311,77 @@ export default function LatestJobsPage() {
       const an = companyMap[a.company_id] ?? "", bn = companyMap[b.company_id] ?? "";
       return companyAsc ? an.localeCompare(bn) : bn.localeCompare(an);
     });
-  }, [filteredJobs, companyMap, companyAsc, postedAsc, sortByPosted]);
+  }, [filteredMeta, companyMap, companyAsc, postedAsc, sortByPosted]);
 
-  const totalPages    = Math.max(1, Math.ceil(sortedJobs.length / pageSize));
-  const paginatedJobs = sortedJobs.slice((page - 1) * pageSize, page * pageSize);
-  const cellPad       = compact ? "px-4 py-1.5" : "px-4 py-3";
-  const hasFilters    = !!search || !!locationFilter || statusFilter !== "all";
+  const stats = useMemo(() => ({
+    showing:   filteredMeta.length,
+    companies: new Set(filteredMeta.map(j => j.company_id)).size,
+    tracked:   filteredMeta.filter(j => j.id in statuses).length,
+  }), [filteredMeta, statuses]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedMeta.length / pageSize));
+  const pageSlice  = useMemo(
+    () => sortedMeta.slice((page - 1) * pageSize, page * pageSize),
+    [sortedMeta, page, pageSize]
+  );
+  const pageIdsKey = pageSlice.map(j => j.id).join(",");
+
+  // Fetch posting_url whenever the visible page changes
+  useEffect(() => {
+    if (!metaLoading && pageSlice.length > 0) {
+      fetchPageUrls(pageSlice.map(j => j.id));
+    }
+  }, [pageIdsKey, metaLoading]);
+
+  const cellPad    = compact ? "px-4 py-1.5" : "px-4 py-3";
+  const hasFilters = !!search || !!locationFilter || statusFilter !== "all";
+
+  // ── Export CSV ────────────────────────────────────────────────────────────
+
+  async function exportApplied() {
+    const stored = localStorage.getItem("jobhunt_status");
+    const statusMap: Record<string, string> = stored ? JSON.parse(stored) : {};
+    const ids = Object.keys(statusMap);
+    if (ids.length === 0) { alert("No tracked jobs to export yet."); return; }
+
+    setExporting(true);
+    const { data: jobsData } = await supabase
+      .from("jobs")
+      .select("id, title, posting_url, posted_at, job_id, locations, company_id")
+      .in("id", ids);
+
+    if (!jobsData?.length) { setExporting(false); alert("Could not fetch job details."); return; }
+
+    const cIds = Array.from(new Set(jobsData.map(j => j.company_id)));
+    const { data: companies } = await supabase.from("companies").select("id, name").in("id", cIds);
+    const cMap: Record<string, string> = {};
+    companies?.forEach(c => (cMap[c.id] = c.name));
+
+    const notesRaw  = localStorage.getItem("jobhunt_notes");
+    const notesMap: Record<string, string> = notesRaw ? JSON.parse(notesRaw) : {};
+
+    const headers = ["Company", "Title", "Job ID", "Status", "Location", "Posted Date", "Job URL", "Notes"];
+    const rows = jobsData.map(j => [
+      cMap[j.company_id] ?? "",
+      j.title,
+      j.job_id ?? "",
+      STATUS_META[statusMap[j.id] as JobStatus]?.label ?? statusMap[j.id] ?? "",
+      fmtLocation(j.locations),
+      j.posted_at ? new Date(j.posted_at).toLocaleDateString() : "",
+      j.posting_url,
+      notesMap[j.id] ?? "",
+    ]);
+
+    const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const csv = [headers, ...rows].map(r => r.map(c => esc(String(c))).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `job-tracker-${todayISO()}.csv`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+    setExporting(false);
+  }
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -382,10 +404,9 @@ export default function LatestJobsPage() {
           </button>
         </div>
 
-        {/* Stats bar — always reflects current day/filter selection */}
-        {!loading && !error && (
+        {/* Stats bar */}
+        {!metaLoading && !metaError && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
-            {/* Card 1: context-aware label */}
             <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-5 py-4 shadow-sm">
               <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">
                 {selectedDate ? shortDate(selectedDate) : "In Range"}
@@ -393,7 +414,6 @@ export default function LatestJobsPage() {
               <p className="text-2xl font-semibold text-slate-800 dark:text-slate-100">{stats.showing}</p>
             </div>
 
-            {/* Card 2: today's count — fixed reference, never changes with selection */}
             <div className="rounded-xl border border-blue-100 dark:border-slate-700 bg-white dark:bg-slate-800 px-5 py-4 shadow-sm">
               <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Today</p>
               <p className="text-2xl font-semibold text-blue-600 dark:text-blue-400">{todayTotal}</p>
@@ -445,12 +465,11 @@ export default function LatestJobsPage() {
           </div>
         </div>
 
-        {/* Day Strip — replaces date picker entirely */}
-        {!loading && !error && (
+        {/* Day strip */}
+        {!metaLoading && !metaError && (
           <div className="mb-3">
-            <div className="flex gap-2 overflow-x-auto pb-1 scroll-smooth" style={{ scrollbarWidth: "none" }}>
+            <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
 
-              {/* All pill */}
               <button
                 onClick={() => { setSelectedDate(null); setPage(1); }}
                 className={`shrink-0 flex flex-col items-center px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
@@ -460,15 +479,13 @@ export default function LatestJobsPage() {
                 }`}
               >
                 <span className="text-xs leading-none mb-1 font-normal opacity-80">All</span>
-                <span className="text-base font-semibold leading-none">{jobs.length}</span>
+                <span className="text-base font-semibold leading-none">{jobsMeta.length}</span>
               </button>
 
-              {/* Day pills */}
               {dayPills.map(({ date, count }) => {
                 const isToday    = date === todayISO();
                 const isSelected = selectedDate === date;
                 const hasJobs    = count > 0;
-
                 return (
                   <button
                     key={date}
@@ -478,15 +495,13 @@ export default function LatestJobsPage() {
                       isSelected
                         ? "bg-blue-600 border-blue-600 text-white"
                         : isToday && hasJobs
-                        ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:border-blue-400 dark:hover:border-blue-500"
+                        ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:border-blue-400"
                         : hasJobs
                         ? "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-300 dark:hover:border-blue-600"
                         : "bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-800 text-slate-300 dark:text-slate-600 cursor-not-allowed"
                     }`}
                   >
-                    <span className={`text-xs leading-none mb-1 ${isSelected ? "opacity-80" : "font-normal"}`}>
-                      {pillLabel(date)}
-                    </span>
+                    <span className="text-xs leading-none mb-1 font-normal">{pillLabel(date)}</span>
                     <span className="text-base font-semibold leading-none">{count}</span>
                   </button>
                 );
@@ -495,10 +510,8 @@ export default function LatestJobsPage() {
           </div>
         )}
 
-        {/* Controls Row 2: Status + Location + Rows + Page info */}
+        {/* Controls row 2: Status + Location + Rows + Page info */}
         <div className="flex flex-wrap items-center gap-3 mb-4">
-
-          {/* Status filter */}
           <div className="flex flex-wrap items-center gap-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-1">
             {([
               { label: "All",         value: "all"         },
@@ -539,28 +552,28 @@ export default function LatestJobsPage() {
                 {[10, 20, 30, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
               </select>
             </div>
-            <span>{sortedJobs.length} result{sortedJobs.length !== 1 ? "s" : ""} · Page {page}/{totalPages}</span>
+            <span>{sortedMeta.length} result{sortedMeta.length !== 1 ? "s" : ""} · Page {page}/{totalPages}</span>
           </div>
         </div>
 
-        {/* States */}
-        {loading && (
+        {/* Loading / error / empty states */}
+        {metaLoading && (
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-16 text-center text-slate-500 dark:text-slate-400 shadow-sm">
-            Loading jobs...
+            Loading jobs…
           </div>
         )}
 
-        {!loading && error && (
+        {!metaLoading && metaError && (
           <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-10 text-center shadow-sm">
-            <p className="text-red-600 dark:text-red-400 mb-3">{error}</p>
+            <p className="text-red-600 dark:text-red-400 mb-3">{metaError}</p>
             <button
-              onClick={() => fetchJobs()}
+              onClick={() => fetchMeta(range)}
               className="rounded-md border border-red-300 dark:border-red-700 px-4 py-1.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40"
             >Retry</button>
           </div>
         )}
 
-        {!loading && !error && sortedJobs.length === 0 && (
+        {!metaLoading && !metaError && sortedMeta.length === 0 && (
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-16 text-center shadow-sm">
             <p className="text-slate-500 dark:text-slate-400 mb-2">
               {selectedDate && !hasFilters
@@ -576,8 +589,8 @@ export default function LatestJobsPage() {
           </div>
         )}
 
-        {/* Table */}
-        {!loading && !error && paginatedJobs.length > 0 && (
+        {/* Table — rendered from sorted metadata; posting_url from phase-2 fetch */}
+        {!metaLoading && !metaError && pageSlice.length > 0 && (
           <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm">
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 sticky top-0 z-10">
@@ -603,12 +616,13 @@ export default function LatestJobsPage() {
                 </tr>
               </thead>
               <tbody>
-                {paginatedJobs.map(job => {
+                {pageSlice.map(job => {
                   const status     = getStatus(job.id);
                   const statusMeta = status ? STATUS_META[status] : null;
                   const isNew      = lastVisit !== null && new Date(job.first_seen_at) > lastVisit;
                   const hasNote    = !!getNote(job.id);
                   const noteOpen   = openNoteId === job.id;
+                  const url        = pageUrls[job.id];
 
                   const rowBg = status === "rejected"
                     ? "bg-slate-50 dark:bg-slate-800/50 opacity-70"
@@ -625,12 +639,12 @@ export default function LatestJobsPage() {
                               <span className="rounded-full bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 leading-none">NEW</span>
                             )}
                             <Link href={`/companies/${job.company_id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
-                              {companyMap[job.company_id] ?? "Unknown"}
+                              {companyMap[job.company_id] ?? "—"}
                             </Link>
                           </div>
                         </td>
                         <td className={`${cellPad} font-medium text-slate-800 dark:text-slate-100`}>{job.title}</td>
-                        <td className={`${cellPad} text-slate-500 dark:text-slate-400`}>{job.job_id ?? "-"}</td>
+                        <td className={`${cellPad} text-slate-500 dark:text-slate-400`}>{job.job_id ?? "—"}</td>
                         <td className={`${cellPad} text-slate-600 dark:text-slate-300`}>{fmtLocation(job.locations)}</td>
                         <td className={`${cellPad} whitespace-nowrap ${freshnessClass(job.posted_at)}`}>
                           {fmtDateTime(job.posted_at)}
@@ -665,12 +679,18 @@ export default function LatestJobsPage() {
                           </button>
                         </td>
                         <td className={`${cellPad}`}>
-                          <a
-                            href={job.posting_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
-                          >View ↗</a>
+                          {url ? (
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
+                            >View ↗</a>
+                          ) : (
+                            <span className={`text-slate-300 dark:text-slate-600 text-xs ${urlsLoading ? "animate-pulse" : ""}`}>
+                              {urlsLoading ? "…" : "—"}
+                            </span>
+                          )}
                         </td>
                       </tr>
 
@@ -697,7 +717,7 @@ export default function LatestJobsPage() {
             className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-4 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50"
           >← Prev</button>
           <button
-            disabled={page >= totalPages || sortedJobs.length === 0}
+            disabled={page >= totalPages || sortedMeta.length === 0}
             onClick={() => setPage(p => p + 1)}
             className="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-4 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50"
           >Next →</button>
