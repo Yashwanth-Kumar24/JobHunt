@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
@@ -27,20 +27,37 @@ function fmt(v: string | null) {
   return new Date(v).toLocaleDateString();
 }
 
+function toLocalDate(value: string): string {
+  const d = new Date(value);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function todayISO(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function daysSince(v: string | null): number {
   if (!v) return 999;
-  return Math.floor((Date.now() - new Date(v).getTime()) / 86_400_000);
+  const postedLocal = toLocalDate(v);
+  const today       = todayISO();
+  const [py, pm, pd] = postedLocal.split("-").map(Number);
+  const [ty, tm, td] = today.split("-").map(Number);
+  return Math.round(
+    (new Date(ty, tm - 1, td).getTime() - new Date(py, pm - 1, pd).getTime()) / 86_400_000
+  );
 }
 
 function freshnessClass(posted_at: string | null): string {
   const d = daysSince(posted_at);
   if (d === 0) return "text-green-600 dark:text-green-400 font-semibold";
-  if (d <= 2)  return "text-slate-700 dark:text-slate-200";
+  if (d === 1) return "text-blue-600 dark:text-blue-400 font-medium";
+  if (d <= 3)  return "text-amber-600 dark:text-amber-400";
   if (d <= 7)  return "text-slate-500 dark:text-slate-400";
   return "text-slate-400 dark:text-slate-500";
 }
 
-function NoteCell({ jobId, initial, onSave }: { jobId: string; initial: string; onSave: (v: string) => void }) {
+function NoteCell({ initial, onSave }: { initial: string; onSave: (v: string) => void }) {
   const [val, setVal] = useState(initial);
   useEffect(() => { setVal(initial); }, [initial]);
   return (
@@ -89,6 +106,7 @@ export default function JobsPage() {
       .select("id, title, posting_url, posted_at, job_id, locations")
       .eq("company_id", companyId)
       .order("posted_at", { ascending: false })
+      .limit(5000)
       .then(({ data, error: err }) => {
         if (err) setError("Failed to load jobs. Please try again.");
         else if (data) { setJobs(data); setPage(1); }
@@ -252,8 +270,8 @@ export default function JobsPage() {
                     : "hover:bg-slate-50 dark:hover:bg-slate-700/40";
 
                   return (
-                    <>
-                      <tr key={job.id} className={`border-b border-slate-100 dark:border-slate-700 transition-colors ${rowBg}`}>
+                    <React.Fragment key={job.id}>
+                      <tr className={`border-b border-slate-100 dark:border-slate-700 transition-colors ${rowBg}`}>
                         <td className={`${cellPad} font-medium text-slate-800 dark:text-slate-100`}>{job.title}</td>
                         <td className={`${cellPad} text-slate-500 dark:text-slate-400`}>{job.job_id ?? "-"}</td>
                         <td className={`${cellPad} text-slate-600 dark:text-slate-300`}>{fmtLocation(job.locations)}</td>
@@ -291,13 +309,13 @@ export default function JobsPage() {
                       </tr>
 
                       {noteOpen && (
-                        <tr key={`${job.id}-note`} className="border-b border-slate-100 dark:border-slate-700">
+                        <tr className="border-b border-slate-100 dark:border-slate-700">
                           <td colSpan={7} className="px-4 pb-3 pt-1 bg-yellow-50/50 dark:bg-yellow-900/10">
-                            <NoteCell jobId={job.id} initial={getNote(job.id)} onSave={v => setNote(job.id, v)} />
+                            <NoteCell initial={getNote(job.id)} onSave={v => setNote(job.id, v)} />
                           </td>
                         </tr>
                       )}
-                    </>
+                    </React.Fragment>
                   );
                 })}
               </tbody>

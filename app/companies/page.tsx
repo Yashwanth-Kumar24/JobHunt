@@ -27,7 +27,8 @@ export default function CompaniesPage() {
           supabase
             .from("jobs")
             .select("company_id")
-            .gte("posted_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()),
+            .gte("posted_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+            .limit(10000),
         ]);
 
       if (cErr || jErr) {

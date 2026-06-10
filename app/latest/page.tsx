@@ -75,14 +75,22 @@ function fmtDateTime(value: string): string {
   });
 }
 
+/** Compare calendar days locally — avoids UTC timezone drift making a job look "today" when it's not */
 function daysSince(value: string): number {
-  return Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000);
+  const postedLocal = toLocalDate(value);
+  const today       = todayISO();
+  const [py, pm, pd] = postedLocal.split("-").map(Number);
+  const [ty, tm, td] = today.split("-").map(Number);
+  return Math.round(
+    (new Date(ty, tm - 1, td).getTime() - new Date(py, pm - 1, pd).getTime()) / 86_400_000
+  );
 }
 
 function freshnessClass(posted_at: string): string {
   const d = daysSince(posted_at);
   if (d === 0) return "text-green-600 dark:text-green-400 font-semibold";
-  if (d <= 2)  return "text-slate-700 dark:text-slate-200";
+  if (d === 1) return "text-blue-600 dark:text-blue-400 font-medium";
+  if (d <= 3)  return "text-amber-600 dark:text-amber-400";
   if (d <= 7)  return "text-slate-500 dark:text-slate-400";
   return "text-slate-400 dark:text-slate-500";
 }
@@ -95,11 +103,12 @@ const QUOTES = [
   "You're not behind. You're building.",
   "It doesn't take 100 yeses. It takes one.",
   "The offer exists. You just haven't found it yet.",
+  "Rejection is redirection. Keep applying.",
+  "The next application could be the one.",
+  "Hard days build the strongest stories.",
 ];
-function getDailyQuote(): string {
-  const start = new Date(new Date().getFullYear(), 0, 0);
-  const day = Math.floor((Date.now() - start.getTime()) / 86_400_000);
-  return QUOTES[day % QUOTES.length];
+function randomQuote(): string {
+  return QUOTES[Math.floor(Math.random() * QUOTES.length)];
 }
 
 const RANGE_OPTIONS: { label: string; value: Range }[] = [
@@ -151,7 +160,7 @@ export default function LatestJobsPage() {
 
   const { statuses, setStatus, getStatus, getNote, setNote } = useJobTracker();
   const lastVisit = useLastVisit();
-  const quote = useMemo(() => getDailyQuote(), []);
+  const [quote] = useState(() => randomQuote());
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
 
@@ -167,7 +176,8 @@ export default function LatestJobsPage() {
       .from("jobs")
       .select("id, title, posting_url, posted_at, first_seen_at, job_id, locations, company_id")
       .gte("posted_at", from.toISOString())
-      .order("posted_at", { ascending: false });
+      .order("posted_at", { ascending: false })
+      .limit(10000);
 
     if (jobsErr) {
       setError("Failed to load jobs. Please try again.");
